@@ -44,10 +44,11 @@ from selenium.common.exceptions import WebDriverException
 # ==============================================================================
 
 # 1. MODO DE OPERAÇÃO (PILOTO AUTOMÁTICO)
-AUTO_REGULATE = True 
+AUTO_REGULATE = False 
+
 
 # 2. VELOCIDADE
-SPEED_FACTOR = 1.2
+SPEED_FACTOR = 1.5
 DRIVER_FILENAME = "msedgedriver.exe"
 
 # 3. IA & IDIOMA
@@ -55,29 +56,47 @@ FEED_ENGLISH_ONLY = True
 AI_PERSONA = "I am a Senior Data Scientist experienced in Python, Databricks, ML and Big Data Strategy."
 
 # 4. ALVOS
+
+HIGH_VALUE_KEYWORDS = [
+    # Data Science & ML
+    "machine learning", "deep learning", "generative ai", "llms", "nlp",
+    "reinforcement learning", "data scientist", "ml engineer", "ai specialist",
+    # Big Data & Cloud
+    "apache spark", "databricks", "hadoop", "cloud architect", 
+    "aws", "gcp", "azure", "data engineer", "etl", "big data analytics",
+    # Engenharia & DevOps
+    "data governance", "data quality", "data catalog", 
+    "software engineer", "backend development", "python development", "datamodelling"
+]
+# 4. ALVOS (Novos alvos expandidos para conexão)
 TARGET_ROLES = [
-    "head of data", "chief data officer", "director of data", "cto", 
-    "vp of engineering", "head of analytics", "data science manager",
-    "analytics manager", "product owner",
-    "senior data scientist", "lead data scientist", "staff data scientist",
+    # Liderança & Executivos
+    "chief data officer", "cdO", "chief technology officer", "cto", 
+    "vp of engineering", "vp of data", "head of data", "head of analytics",
+    "director of data", "director of engineering", "product owner", 
+    "engineering manager", "analytics director", "head of machine learning",
+    # Especialistas Sênior (Influence)
+    "lead data scientist", "staff data scientist", "principal data scientist",
+    "senior data scientist", "data science manager", "ml engineering lead","tech lead",
+    # Recrutamento & RH
     "tech recruiter", "technical recruiter", "talent acquisition", 
-    "hr business partner"
+    "hr business partner", "recruiting manager", "recruitment specialist",
 ]
 
 # 5. LIMITES MANUAIS (Fallback se AUTO_REGULATE = False)
 LIMITS_CONFIG = {
-    "CONNECTION": (5, 10),
+    "CONNECTION": (10, 10),
     "FOLLOW": (10, 15),
-    "PROFILES_SCAN": (20, 30),
-    "FEED_POSTS": (20, 30)
+    "PROFILES_SCAN": (0, 10),
+    "FEED_POSTS": (0, 1)
 }
 
 # 6. PROBABILIDADES MANUAIS (Fallback se AUTO_REGULATE = False)
 PROBS = {
-    "FEED_LIKE": (0.40, 0.60),
-    "FEED_COMMENT": (0.25, 0.30),
-    "GROUP_LIKE": (0.50, 0.70),    
-    "GROUP_COMMENT": (0.10, 0.20)  
+    "FEED_LIKE": (0.00, 0.00),
+    "FEED_COMMENT": (0.00, 0.00),
+    "GROUP_LIKE": (0.05, 0.070),    
+    "GROUP_COMMENT": (0.00, 0.00)  
 }
 
 # 7. CONFIGURAÇÕES GERAIS
@@ -109,10 +128,22 @@ LINKEDIN_GROUPS_LIST = [
 # ==============================================================================
 DB_NAME = "bot_data.db"
 
+
+
+# ==============================================================================
+# [NOVO] INTEGRAÇÃO COM BANCO DE DADOS (SQLITE)
+# ==============================================================================
+DB_NAME = "bot_data.db"
+# ==============================================================================
+# [NOVO] INTEGRAÇÃO COM BANCO DE DADOS (SQLITE) - CORRIGIDO
+# ==============================================================================
+DB_NAME = "bot_data.db"
+
 def init_db():
-    """Cria o banco de dados se não existir."""
+    """Cria o banco de dados se não existir e garante o schema ATUALIZADO."""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
+    
     # Tabela de Interações
     c.execute('''CREATE TABLE IF NOT EXISTS interactions (
                     profile_url TEXT PRIMARY KEY,
@@ -122,13 +153,22 @@ def init_db():
                     status TEXT,
                     timestamp DATETIME
                 )''')
-    # Tabela de Analytics (Dashboard)
+    
+    # Tabela de Analytics (Dashboard) - Schema ATUALIZADO para 5 colunas
     c.execute('''CREATE TABLE IF NOT EXISTS profile_analytics (
                     timestamp DATETIME,
                     profile_views INT,
                     post_impressions INT,
-                    search_appearances INT
+                    search_appearances INT,
+                    followers INT  -- CAMPO 'followers'
                 )''')
+    
+    # Lógica simples para adicionar a coluna 'followers' se ela não existir
+    try:
+        c.execute("SELECT followers FROM profile_analytics LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE profile_analytics ADD COLUMN followers INT")
+
     conn.commit()
     conn.close()
 
@@ -145,16 +185,20 @@ def log_interaction_db(url, name, headline, source, status):
         conn.close()
     except: pass
 
-def log_analytics_db(views, impressions, searches):
-    """Salva dados do dashboard."""
+def log_analytics_db(views, impressions, searches, followers):
+    """Salva dados do dashboard. AGORA ACEITA 4 ARGUMENTOS (views, impressions, searches, followers)."""
     try:
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        c.execute("INSERT INTO profile_analytics VALUES (?, ?, ?, ?)", (ts, views, impressions, searches))
+        # SQL statement altered to include 5 placeholders (?, ?, ?, ?, ?)
+        c.execute("INSERT INTO profile_analytics VALUES (?, ?, ?, ?, ?)", (ts, views, impressions, searches, followers)) 
         conn.commit()
         conn.close()
-    except: pass
+    except Exception as e:
+        # Adicionei um print para depuração, caso o erro persista
+        print(f"Erro ao logar analytics no DB: {e}")
+        pass
 
 # Inicializa o DB ao carregar o script
 init_db()
@@ -201,19 +245,19 @@ def calculate_smart_parameters():
         return limits, probs
     
     # NÍVEL 2: CRESCIMENTO (7 a 14 dias) -> Comportamento: Participante Ativo
-    elif days_run < 3:
+    elif days_run < 14:
         print(" -> Modo: CRESCIMENTO (Engajamento Moderado)")
         limits = {
-            "CONNECTION": (6, 10),
+            "CONNECTION": (10, 10),
             "FOLLOW": (8, 12),
-            "PROFILES_SCAN": (15, 25),
-            "FEED_POSTS": (15, 20)
+            "PROFILES_SCAN": (0, 15),
+            "FEED_POSTS": (0, 2) #15 a 20
         }
         probs = {
-            "FEED_LIKE": (0.45, 0.65),
-            "FEED_COMMENT": (0.15, 0.25),  
-            "GROUP_LIKE": (0.50, 0.70),
-            "GROUP_COMMENT": (0.10, 0.20)
+            "FEED_LIKE": (0.1, 0.65),
+            "FEED_COMMENT": (0.0, 0.0),  
+            "GROUP_LIKE": (0.1, 0.70),
+            "GROUP_COMMENT": (0.00, 0.00)
         }
         return limits, probs
     
@@ -494,73 +538,448 @@ def withdraw_old_invites(browser):
 # [NOVO] SNIPER MODE (CAÇA RECRUTADORES)
 # ==============================================================================
 
+# ==============================================================================
+# [NOVO] SNIPER MODE (CAÇA RECRUTADORES) - CORRIGIDO LOG
+# ==============================================================================
+
+# ==============================================================================
+# [NOVO] SNIPER MODE (CAÇA RECRUTADORES) - CORRIGIDO O CICLO DE VISITA
+# ==============================================================================
+
 def run_sniper_mode(browser):
-    """Busca ativa por recrutadores fora dos grupos."""
+    """Busca ativa por recrutadores fora dos grupos com log detalhado e ciclo de visita."""
     global SESSION_CONNECTION_COUNT
     
-    if SESSION_CONNECTION_COUNT >= CONNECTION_LIMIT:
-        print("\n🎯 [SNIPER MODE] Limite diário de conexões atingido. Pulando Sniper Mode.")
+    limit_remaining = CONNECTION_LIMIT - SESSION_CONNECTION_COUNT
+    if limit_remaining <= 0:
+        print("\n🎯 [SNIPER MODE] Limite diário de conexões já atingido. Pulando Sniper Mode.")
         return
         
     role = random.choice(TARGET_ROLES)
-    print(f"\n🎯 [SNIPER MODE] Caçando: {role} (Limite Diário Restante: {CONNECTION_LIMIT - SESSION_CONNECTION_COUNT})")
+    print(f"\n🎯 [SNIPER MODE] Caçando: {role} (Limite Restante: {limit_remaining} / {CONNECTION_LIMIT})")
     
     encoded = role.replace(" ", "%20")
-    url = f"https://www.linkedin.com/search/results/people/?keywords={encoded}&origin=SWITCH_SEARCH_VERTICAL"
+    # Busca por pessoas em 2º grau de conexão para otimizar convites
+    url = f"https://www.linkedin.com/search/results/people/?facetNetwork=%5B%22S%22%5D&keywords={encoded}&origin=SWITCH_SEARCH_VERTICAL"
     
     browser.get(url)
     human_sleep(8, 12)
     
+    # Coleta todos os containers de resultado (cada container é um perfil)
     profiles = browser.find_elements(By.XPATH, "//li[contains(@class, 'reusable-search__result-container')]")
-    count = 0
+    count_visited = 0
     
-    # Limita o Sniper a apenas a quantidade que falta para atingir o limite
-    limit_remaining = CONNECTION_LIMIT - SESSION_CONNECTION_COUNT
-    max_search_connect = min(3, limit_remaining) # Tenta no máximo 3 dos que restam
+    # Limita a tentativa de conexão para não ser muito agressivo na pesquisa
+    max_search_connect = min(5, limit_remaining)
+    
+    main_window = browser.current_window_handle
     
     for p in profiles:
-        if count >= max_search_connect: break 
+        # Se atingir o limite de conexões da sessão ou o limite do Sniper Mode
+        if count_visited >= max_search_connect: break
         if SESSION_CONNECTION_COUNT >= CONNECTION_LIMIT: break
         
+        link = ""
+        name = "Unknown"
+        headline = ""
+        
         try:
-            link = p.find_element(By.XPATH, ".//a[contains(@class, 'app-aware-link')]").get_attribute("href").split('?')[0]
+            # 1. Tenta extrair o link, nome e headline da página de busca
+            link_el = p.find_element(By.XPATH, ".//a[contains(@class, 'app-aware-link')]")
+            link = link_el.get_attribute("href").split('?')[0]
             
-            # Abre nova aba
+            try: name = p.find_element(By.CSS_SELECTOR, ".entity-result__title-text > a > span[aria-hidden='true']").text
+            except: pass
+            try: headline = p.find_element(By.CSS_SELECTOR, ".entity-result__primary-subtitle").text.lower()
+            except: pass
+            
+            print(f"[{SESSION_CONNECTION_COUNT + 1}/{CONNECTION_LIMIT}] 🕵️  Analisando (Sniper): **{name}**")
+            
+            # 2. Abre nova aba, muda o foco e navega para o perfil
             browser.execute_script("window.open('');")
             browser.switch_to.window(browser.window_handles[-1])
             browser.get(link)
             human_sleep(6, 10)
+            
+            # 3. Executa a lógica de interação (Conexão/Log)
+            is_target = any(r in headline for r in TARGET_ROLES)
+            
+            if is_target:
+                print(f"    -> [ALVO] Headline: {headline[:40]}...")
+                if connect_with_user(browser, name, headline, "Sniper Search"):
+                    log_interaction_db(link, name, headline, "Sniper", "Connected")
+                    print(f"    -> [SUCCESS] **Conectado**. Total: {SESSION_CONNECTION_COUNT}/{CONNECTION_LIMIT}")
+                    sleep_after_connection()
+                else:
+                    # Falhou em conectar (já conectado, pendente, ou erro no modal)
+                    log_interaction_db(link, name, headline, "Sniper", "Visited/Fail")
+                    print("    -> [FAIL] Falha ao conectar ou já pendente/conectado.")
+            else:
+                log_interaction_db(link, name, headline, "Sniper", "Visited/Skipped")
+                print("    -> [SKIP] Não é alvo.")
+                
+            # 4. Fecha a aba do perfil e volta para a aba principal de busca
+            browser.close()
+            browser.switch_to.window(main_window)
+            count_visited += 1 
+            
+        except Exception as e: 
+            print(f"    -> [ERRO NO CICLO DE VISITA] {e}")
+            # Garante que a aba atual seja fechada, se for a aba extra
+            if len(browser.window_handles) > 1 and browser.current_window_handle != main_window:
+                try: browser.close()
+                except: pass
+            
+            # Garante que o foco volte para a aba principal para continuar a iteração
+            try: browser.switch_to.window(main_window)
+            except: pass
+            continue
+            
+    print(f"🎯 [SNIPER MODE] Concluído. Conexões feitas na sessão: {SESSION_CONNECTION_COUNT}")
+
+
+# ==============================================================================
+# FUNÇÃO PRINCIPAL DE GRUPO - CORRIGIDO LOG
+# ==============================================================================
+
+# ==============================================================================
+# FUNÇÃO PRINCIPAL DE VARREDURA (SUBSTITUI run_group_bot)
+# ==============================================================================
+
+def run_main_bot_logic(browser, sniper_targets=None):
+    """
+    Combina coleta de perfis do grupo com alvos Sniper e varre a lista completa.
+    """
+    global SESSION_CONNECTION_COUNT, SESSION_FOLLOW_COUNT, CONNECTED
+    
+    if SAVECSV:
+        if not os.path.exists("CSV"): os.makedirs("CSV")
+        csv_header = ["Name", "Link", "Status", "Time", "Connection_Limit", "Follow_Limit", "Like_Prob", "Comment_Prob", "Profile_Scan_Limit"]
+        create_csv(csv_header, TIME)
+
+    # 1. COLETA E INTERAÇÃO NO GRUPO
+    print(f'-> Group: {GROUP_URL}')
+    browser.get(GROUP_URL)
+    human_sleep(10, 15)
+    try: group_name = browser.find_element(By.TAG_NAME, 'h1').text
+    except: group_name = "our group"
+    
+    print(f"-> Interagindo e Coletando perfis do Grupo (Meta: {PROFILES_TO_SCAN})...")
+    
+    profiles_queued = []
+    scroll_attempts = 0
+    max_scroll_attempts = 20
+    
+    commented_in_group = set()
+    visited_file = 'visitedUsers.txt'
+    if not os.path.exists(visited_file): open(visited_file, 'w').close()
+    with open(visited_file, 'r') as f: visited_list = [l.strip() for l in f]
+
+
+    # LOOP DE COLETA COM SCROLL (do Grupo)
+    while len(profiles_queued) < PROFILES_TO_SCAN and scroll_attempts < max_scroll_attempts:
+        posts = browser.find_elements(By.CLASS_NAME, "feed-shared-update-v2")
+        
+        for post in posts:
+            if len(profiles_queued) >= PROFILES_TO_SCAN: break
+            
+            try:
+                # Tenta extrair URL e Enfileirar
+                url = ""
+                try:
+                    el = post.find_element(By.XPATH, ".//a[contains(@href, '/in/') and not(contains(@href, '/miniProfile/'))]")
+                    url = el.get_attribute("href").split('?')[0]
+                    
+                    if url and url not in profiles_queued and url not in visited_list: 
+                        profiles_queued.append(url)
+                        if VERBOSE: print(f"    [Coletado Grupo] {len(profiles_queued)}/{PROFILES_TO_SCAN}")
+                except: pass
+
+                # Interações (Likes/Comments)
+                urn = post.get_attribute("data-urn")
+                if urn and urn not in commented_in_group:
+                    browser.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", post)
+                    human_sleep(1, 2)
+                    if random.random() < DAILY_LIKE_PROB: perform_reaction_varied(browser, post)
+                    if random.random() < DAILY_COMMENT_PROB:
+                        try:
+                            text = post.text
+                            if len(text) > 15 and (not FEED_ENGLISH_ONLY or is_text_english(text)):
+                                comment = get_ai_comment(text)
+                                if perform_comment(browser, post, comment):
+                                    commented_in_group.add(urn)
+                        except: pass
+                    commented_in_group.add(urn)
+            except: continue
+        
+        if len(profiles_queued) < PROFILES_TO_SCAN:
+            print(f"    -> Scrollando grupo... (Tentativa {scroll_attempts+1}/{max_scroll_attempts})")
+            browser.execute_script("window.scrollBy(0, 800);")
+            human_sleep(3, 5) 
+            scroll_attempts += 1
+            
+    # 2. ADICIONA ALVOS SNIPER À LISTA DE PERFIS
+    if sniper_targets:
+        print(f"-> Incorporando {len(sniper_targets)} alvos Sniper...")
+        # Adiciona alvos sniper apenas se não foram visitados ou coletados ainda
+        for url in sniper_targets:
+            if url not in profiles_queued and url not in visited_list:
+                 profiles_queued.append(url)
+
+    total_profiles_to_visit = min(PAG_ABERTAS, len(profiles_queued))
+    print(f"\n-> Varredura finalizada. Visitando **{total_profiles_to_visit}** perfis (Grupo + Sniper)...")
+    
+    # 3. LOOP DE VISITA COM LOG DETALHADO (Único para todos os perfis)
+    processed = 0
+    
+    for url in profiles_queued:
+        if processed >= PAG_ABERTAS: break
+        
+        name = "Unknown"
+        headline = ""
+        status = "Visited"
+        CONNECTED = False
+        
+        # Determina a origem para o log DB
+        source = "Group" if GROUP_URL in browser.current_url else "Sniper"
+        if url in sniper_targets: source = "Sniper"
+
+        try:
+            browser.get(url)
+            human_sleep(8, 12)
+            processed += 1
             
             try: name = browser.title.split('|')[0].strip()
             except: name = "Unknown"
             try: headline = browser.find_element(By.XPATH, "//div[contains(@class, 'text-body-medium')]").text.lower()
             except: headline = ""
             
-            # Tenta conectar usando a lógica existente
-            print(f"    -> [SNIPER] Analisando: {name}")
+            print(f"\n[{processed}/{total_profiles_to_visit}] Perfil ({source}): **{name}** ({headline[:30]}...)")
             
-            # Checa se é alvo e tenta conectar
-            is_target = any(r in headline for r in TARGET_ROLES)
+            endorse_skills(browser)
             
-            if is_target and connect_with_user(browser, name, headline, "Sniper Search"):
-                log_interaction_db(link, name, headline, "Sniper", "Connected")
-                sleep_after_connection()
-                count += 1 # Conta apenas a conexão bem sucedida
-            else:
-                log_interaction_db(link, name, headline, "Sniper", "Visited")
+            # 1. Tenta CONECTAR (se for alvo e houver limite)
+            if SESSION_CONNECTION_COUNT < CONNECTION_LIMIT:
+                if any(role in headline for role in TARGET_ROLES):
+                    print(f"    -> [ALVO] Conectando ({SESSION_CONNECTION_COUNT}/{CONNECTION_LIMIT})...")
+                    if connect_with_user(browser, name, headline, group_name):
+                        status = "Connected"
+                        print(f"    -> [SUCCESS] **Conectado**. Total: {SESSION_CONNECTION_COUNT}/{CONNECTION_LIMIT}")
+                        sleep_after_connection()
+                    else:
+                        print(f"    -> [FAIL] Falha ao conectar ou já pendente.")
+            
+            # 2. Tenta SEGUIR (se não conectou, for Top Profile e houver limite)
+            if status not in ["Connected"] and SESSION_FOLLOW_COUNT < FOLLOW_LIMIT:
+                if check_is_top_profile(browser):
+                    if follow_user(browser):
+                        status = "Followed"
+                        SESSION_FOLLOW_COUNT += 1
+                        print(f"    -> [SUCCESS] **Seguido** (SSI Boost). Total: {SESSION_FOLLOW_COUNT}/{FOLLOW_LIMIT}")
+                elif VERBOSE:
+                    print("    -> [SKIP] Não é Top Profile para seguir.")
+            
+            # 3. Log final
+            log_interaction_db(url, name, headline, source, status)
+            with open('visitedUsers.txt', 'a') as f: f.write(url + '\n')
+            
+            # Log CSV
+            if SAVECSV: 
+                add_to_csv([
+                    name, url, status, str(datetime.datetime.now().time()),
+                    CONNECTION_LIMIT, FOLLOW_LIMIT, DAILY_LIKE_PROB, DAILY_COMMENT_PROB, PROFILES_TO_SCAN
+                ], TIME)
                 
-            browser.close()
-            browser.switch_to.window(browser.window_handles[0])
-            
         except Exception as e: 
-            # Fecha a aba se der erro e volta para a principal
-            try: 
-                browser.close()
-                browser.switch_to.window(browser.window_handles[0])
-            except: pass
+            if 'invalid session id' in str(e).lower():
+                print(f"\n!!! ERRO CRÍTICO DE SESSÃO: {e}")
+                browser.quit()
+                start_browser() 
+                return
+            print(f"Erro visita: {e}")
             continue
-            
+
+    print("\n--- VARREDURA FINALIZADA ---")
+    print(f"Total Connected na Sessão: {SESSION_CONNECTION_COUNT}/{CONNECTION_LIMIT}")
+    print(f"Total Followed na Sessão: {SESSION_FOLLOW_COUNT}/{FOLLOW_LIMIT}")
+
 # ==============================================================================
+# [NOVO] COLETA SNIPER (APENAS LINKS)
+# ==============================================================================
+
+# ==============================================================================
+# [NOVO] COLETA SNIPER (APENAS LINKS) - CORREÇÃO AGRESSIVA DE XPATH
+# ==============================================================================
+
+
+# ==============================================================================
+# [NOVO] COLETA SNIPER (PAGINAÇÃO E XPATH CORRIGIDO)
+# ==============================================================================
+
+# ==============================================================================
+# [NOVO] COLETA SNIPER (COM ESPERA EXPLÍCITA E FILTRO ROBUSTO)
+# ==============================================================================
+
+def collect_sniper_targets(browser):
+    """
+    Busca ativa por alvos iterando pelas primeiras 3 páginas de resultados da busca.
+    Usa Espera Explícita para garantir que os resultados estejam na DOM.
+    Retorna: list de URLs únicas.
+    """
+    global CONNECTION_LIMIT, SESSION_CONNECTION_COUNT
+    
+    limit_remaining = CONNECTION_LIMIT - SESSION_CONNECTION_COUNT
+    if limit_remaining <= 0:
+        print("\n🎯 [SNIPER MODE] Limite diário de conexões já atingido. Pulando coleta Sniper.")
+        return []
+        
+    role = random.choice(TARGET_ROLES)
+    print(f"\n🎯 [SNIPER COLLECT] Caçando links para: {role} (Iterando 3 páginas)")
+    
+    encoded = role.replace(" ", "%20")
+    profiles_links = set()
+    MAX_PAGES = 3
+    
+    for page_num in range(1, MAX_PAGES + 1):
+        url = f"https://www.linkedin.com/search/results/people/?keywords={encoded}&origin=SWITCH_SEARCH_VERTICAL&page={page_num}"
+        print(f"    -> Navegando para página {page_num}...")
+        browser.get(url)
+        human_sleep(5, 8) # Pausa inicial reduzida, já que usaremos wait
+        
+        try:
+            # 1. ESPERA EXPLÍCITA: Aguarda até 10 segundos para que pelo menos um container de resultado apareça.
+            WebDriverWait(browser, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "li[contains(@class, 'reusable-search__result-container')]"))
+            )
+            
+            # 2. Rola levemente para carregar todos os elementos visíveis
+            browser.execute_script("window.scrollBy(0, 400);")
+            human_sleep(3, 4)
+            
+            # 3. Estratégia de Coleta: Pega todos os links <a> na página.
+            all_links = browser.find_elements(By.TAG_NAME, 'a')
+            
+            initial_count = len(profiles_links)
+            
+            for el in all_links:
+                href = el.get_attribute("href")
+                
+                if href and "/in/" in href:
+                    link = href.split('?')[0]
+                    
+                    # Filtros essenciais: deve ser um perfil, não um link de mini profile/unavailable, e ter barra final
+                    if link.count("/in/") == 1 and "/in/unavailable" not in link:
+                        profiles_links.add(link)
+                        
+            new_count = len(profiles_links) - initial_count
+            print(f"    -> Página {page_num}: Coletados {new_count} novos links. Total: {len(profiles_links)}.")
+            
+            if len(profiles_links) >= 30:
+                break
+            
+        except TimeoutException:
+            print(f"    -> [TIMEOUT] Nenhuma busca carregada na página {page_num}. Pulando.")
+        except Exception as e:
+            print(f"    -> [ERRO COLETA SNIPER] Falha na página {page_num}: {e}")
+            
+    print(f"    -> Coleta Sniper concluída. Total de links coletados: {len(profiles_links)}.")
+    return list(profiles_links)
+# ==============================================================================
+# [NOVO] CONEXÕES RÁPIDAS (5 Diretas, Não Contábeis)
+# ==============================================================================
+
+QUICK_CONNECT_LIMIT = 5
+
+# ==============================================================================
+# [NOVO] CONEXÕES RÁPIDAS (5 Diretas, Não Contábeis) - CORRIGIDA
+# ==============================================================================
+QUICK_CONNECT_LIMIT = 5
+
+def run_quick_connects(browser):
+    """
+    Executa 5 conexões diretas para perfis altamente relevantes (TARGET_ROLES),
+    sem contar no limite diário (SESSION_CONNECTION_COUNT).
+    """
+    print(f"\n⚡️ [QUICK CONNECTS] Tentando {QUICK_CONNECT_LIMIT} conexões diretas (Bypass Limit)...")
+    
+    targets_to_fetch = random.sample(TARGET_ROLES, k=min(QUICK_CONNECT_LIMIT, len(TARGET_ROLES)))
+    
+    # 1. Busca perfis (Usando o primeiro termo de busca)
+    role = random.choice(targets_to_fetch)
+    encoded = role.replace(" ", "%20")
+    # Buscamos por 2º grau para ter o botão 'Connect' visível
+    url = f"https://www.linkedin.com/search/results/people/?facetNetwork=%5B%22S%22%5D&keywords={encoded}&origin=SWITCH_SEARCH_VERTICAL"
+    
+    browser.get(url)
+    human_sleep(8, 12)
+    
+    # 2. Coleta os botões de conexão da primeira página
+    # Seleciona botões com o texto "Connect" ou "Conectar" dentro da página de resultados
+    connect_buttons = browser.find_elements(By.XPATH, "//button[.//span[text()='Connect'] or .//span[text()='Conectar']]")
+    
+    connect_count = 0
+    
+    for btn in connect_buttons:
+        if connect_count >= QUICK_CONNECT_LIMIT:
+            break
+            
+        name = "Unknown Quick Target"
+        
+        try:
+            # Rola até o botão
+            browser.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", btn)
+            human_sleep(1, 2)
+            
+            # Extrai nome do perfil para log
+            try:
+                name_element = btn.find_element(By.XPATH, "../../..//span[contains(@aria-hidden, 'true')]")
+                name = name_element.text
+            except: pass
+                
+            # Clica no botão de conexão
+            browser.execute_script("arguments[0].click();", btn)
+            human_sleep(3, 5)
+
+            # 3. Lógica de BYPASS DO MODAL DE NOTA
+            try:
+                # Tenta encontrar o botão "Send without a note" / "Enviar sem nota" no modal pop-up
+                xpath_no_note = "//button[@aria-label='Send without a note' or @aria-label='Enviar sem nota']"
+                btn_no_note = WebDriverWait(browser, 3).until(EC.element_to_be_clickable((By.XPATH, xpath_no_note)))
+                
+                browser.execute_script("arguments[0].click();", btn_no_note)
+                
+                print(f"    -> [SUCCESS - QUICK] Conectado (Bypass Nota) com: {name}")
+                connect_count += 1
+                human_sleep(5, 8)
+                
+            except:
+                # Se não encontrou o botão "Send without a note", o convite deve ter sido enviado
+                # diretamente (sem modal), ou o modal é de confirmação final.
+                
+                try:
+                    # Tenta clicar no botão "Send" / "Enviar" final
+                    send_button = WebDriverWait(browser, 2).until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 'artdeco-button--primary') and (.//span[text()='Enviar'] or .//span[text()='Send'])]")))
+                    browser.execute_script("arguments[0].click();", send_button)
+                    
+                    print(f"    -> [SUCCESS - QUICK] Conectado (Envio Direto) com: {name}")
+                    connect_count += 1
+                    human_sleep(5, 8)
+                    
+                except:
+                    # Se falhou tudo (modal inesperado ou botão de envio final)
+                    print(f"    -> [FAIL - QUICK] Falha total ao conectar {name}. Fechando modal.")
+                    try:
+                        # Tenta fechar o modal
+                        browser.find_element(By.XPATH, "//button[@aria-label='Fechar' or @aria-label='Dismiss']").click()
+                    except: pass
+                    continue
+                
+        except Exception as e:
+            # Caso o botão não seja clicável na página de resultados ou haja outro erro.
+            print(f"    -> [FAIL - QUICK] Erro no clique inicial ou extração de nome para {name}: {e}")
+            continue
+
+    print(f"⚡️ [QUICK CONNECTS] Concluído. Total de {connect_count} conexões rápidas feitas.")
 # SSI LOGIC (COM MÉTRICAS COMPLETAS E DASHBOARD DB)
 # ==============================================================================
 
@@ -569,6 +988,7 @@ def update_ssi_table(raw_text, connection_limit, follow_limit,
                      daily_comment_prob, speed_factor, feed_posts_limit,
                      feed_like_prob, feed_comment_prob, 
                      withdrawn_count, current_total_connections,
+                     current_total_followers, # 14º PARÂMETRO
                      file_path='ssi_history.csv'):
     
     today = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -598,39 +1018,47 @@ def update_ssi_table(raw_text, connection_limit, follow_limit,
             last_day_df = existing_df[existing_df['Date'] != today]
             
             if not last_day_df.empty:
-                last_valid_total = last_day_df['Total_Connections'].dropna().iloc[-1] if 'Total_Connections' in last_day_df.columns else 0
+                # CORREÇÃO CRÍTICA: Trata o caso da coluna 'Total_Connections' não existir em arquivos antigos
+                last_valid_total = 0
+                if 'Total_Connections' in last_day_df.columns:
+                    last_valid_total = last_day_df['Total_Connections'].dropna().iloc[-1] if not last_day_df['Total_Connections'].dropna().empty else 0
+                    
                 last_ssi = last_day_df['Total_SSI'].iloc[-1] if 'Total_SSI' in last_day_df.columns else 0
                 
                 if current_total_connections > 0 and last_valid_total > 0:
                     new_connections_gained = current_total_connections - last_valid_total
                     if new_connections_gained < 0: new_connections_gained = 0 
-            
+                
                 if last_ssi > 0:
                     ssi_increase = total_ssi - last_ssi
             
         except Exception as e:
-            # Printa o erro se houver, mas continua com 0.0 para não quebrar.
             print(f"Warning: Failed to calculate SSI metrics from CSV: {e}")
             pass
 
     new_data = {
-        "Date": [today], "Total_SSI": [total_ssi],
+        "Date": [today], 
+        "Total_SSI": [total_ssi],
         "SSI_Increase": [ssi_increase],
-        "Industry_Rank": [industry_rank], "Network_Rank": [network_rank],
+        "Industry_Rank": [industry_rank], 
+        "Network_Rank": [network_rank],
         "Brand": [extract_score("Establish your professional brand", raw_text)],
         "People": [extract_score("Find the right people", raw_text)],
         "Insights": [extract_score("Engage with insights", raw_text)],
         "Relationships": [extract_score("Build relationships", raw_text)],
-        "Connection_Limit": [connection_limit], "Follow_Limit": [follow_limit],
+        "Connection_Limit": [connection_limit], 
+        "Follow_Limit": [follow_limit],
         "Profiles_To_Scan": [profiles_to_scan], 
-        "Group_Like_Prob": [daily_like_prob], "Group_Comment_Prob": [daily_comment_prob],
+        "Group_Like_Prob": [daily_like_prob], 
+        "Group_Comment_Prob": [daily_comment_prob],
         "Speed_Factor": [speed_factor],
         "Feed_Posts_Limit": [feed_posts_limit],
         "Feed_Like_Prob": [feed_like_prob],
         "Feed_Comment_Prob": [feed_comment_prob],
         "Withdrawn_Count": [withdrawn_count],
         "Total_Connections": [current_total_connections],
-        "New_Connections_Accepted": [new_connections_gained]
+        "New_Connections_Accepted": [new_connections_gained],
+        "Total_Followers": [current_total_followers] # NOVO CAMPO AQUI
     }
     new_df = pd.DataFrame(new_data)
     
@@ -640,8 +1068,10 @@ def update_ssi_table(raw_text, connection_limit, follow_limit,
         # Ensure 'Date' is clean for comparison before filtering
         existing_df['Date'] = pd.to_datetime(existing_df['Date'], errors='coerce').dt.strftime('%Y-%m-%d')
         
+        # GARANTE que todas as colunas novas existam no DataFrame antigo (evita erro de concat)
         for col in new_df.columns:
             if col not in existing_df.columns: existing_df[col] = pd.NA 
+            
         # Remove existing data for today before appending new data
         if today in existing_df['Date'].values: existing_df = existing_df[existing_df['Date'] != today]
         updated_df = pd.concat([existing_df, new_df], ignore_index=True)
@@ -649,6 +1079,164 @@ def update_ssi_table(raw_text, connection_limit, follow_limit,
     
     updated_df.to_csv(file_path, index=False)
     return updated_df
+
+def generate_smart_fallback(name, group_name):
+    """
+    CORREÇÃO: Simplifica o fallback para evitar erros de formatação da IA,
+    garantindo que o nome de usuário (first) esteja sempre presente.
+    """
+    clean = re.sub(r'[^a-zA-Z\s]', '', name).strip().split()[0].capitalize() if name and name != "Unknown" else "there"
+    
+    # Mensagem mais simples e robusta
+    fallback_message = (
+        f"Hi {clean}, saw we are in the same group: '{group_name.split('|')[0].strip()}'. "
+        f"As a Senior Data Scientist, I'd love to connect with fellow professionals."
+    )
+    return fallback_message[:297] + "..." if len(fallback_message) > 300 else fallback_message
+
+
+def connect_with_user(browser, name, headline, group_name):
+    """
+    Tenta a conexão primária e o fallback mais robusto para o menu 'Mais'.
+    """
+    global SESSION_CONNECTION_COUNT
+    if SESSION_CONNECTION_COUNT >= CONNECTION_LIMIT:
+        print(f"    -> [LIMIT] Connection attempt skipped. Daily limit ({CONNECTION_LIMIT}) reached.")
+        return False
+        
+    try:
+        # Tenta 1: Botão primário de 'Conectar' (mais comum)
+        xpath_primary = "//button[.//span[contains(text(), 'Conectar') or contains(text(), 'Connect')]]"
+        btn = browser.find_element(By.XPATH, xpath_primary)
+        
+        return click_connect_sequence(browser, btn, name, headline, group_name, is_viewer=False)
+        
+    except Exception as e:
+        if 'invalid session id' in str(e).lower(): raise # Erro crítico não-recuperável
+        
+        # Tentativa 2: Procura no menu 'Mais' (More actions)
+        try:
+            xpath_more = "//button[contains(@aria-label, 'More actions') or .//span[text()='Mais'] or .//span[text()='More']]"
+            
+            # Tenta clicar no botão 'Mais ações'
+            btn_more = WebDriverWait(browser, 5).until(EC.element_to_be_clickable((By.XPATH, xpath_more)))
+            
+            # Usa JS click para garantir que o dropdown abra, evitando interceptação
+            browser.execute_script("arguments[0].click();", btn_more)
+            human_sleep(2, 4)
+            
+            # Procura o botão 'Conectar' DENTRO do dropdown
+            xpath_drop = "//div[contains(@class, 'dropdown')]//span[contains(text(), 'Conectar') or contains(text(), 'Connect')]"
+            btn_drop = WebDriverWait(browser, 5).until(EC.element_to_be_clickable((By.XPATH, xpath_drop)))
+            
+            return click_connect_sequence(browser, btn_drop, name, headline, group_name, is_viewer=False)
+            
+        except Exception as more_e: 
+            # Se falhou o primário e o menu 'Mais'
+            print(f"    -> [SKIP] Não encontrou botão 'Conectar' (Primário ou Menu 'Mais'). Detalhe do erro: {more_e}")
+            return False
+
+def click_connect_sequence(browser, button_element, name, headline, group_name, is_viewer=False):
+    """
+    Sequência blindada para clique no botão Connect e manipulação do modal.
+    Usa JS Click para evitar ElementClickInterceptedException.
+    """
+    global SESSION_CONNECTION_COUNT, CONNECTED, SEND_AI_NOTE
+
+    if SESSION_CONNECTION_COUNT >= CONNECTION_LIMIT:
+        return False
+        
+    # 1. Clica no botão 'Conectar' usando JS para evitar interceptação
+    try:
+        ActionChains(browser).move_to_element(button_element).perform()
+        human_sleep(1, 2)
+        browser.execute_script("arguments[0].click();", button_element)
+        human_sleep(4, 7) # Mais tempo para o modal carregar
+    except Exception as e:
+        print(f"    -> [ERROR] Failed to click 'Connect' button (JS/ActionChains): {e}")
+        return False # Falhou na primeira etapa
+
+    # 2. Lógica de Envio de Nota vs. Envio Direto
+    if SEND_AI_NOTE == 1:
+        try:
+            xpath_add_note = "//button[@aria-label='Adicionar nota' or @aria-label='Add a note']"
+            btn_note = WebDriverWait(browser, 5).until(EC.element_to_be_clickable((By.XPATH, xpath_add_note)))
+            btn_note.click()
+            human_sleep(4, 6) # Mais tempo após o clique na nota
+            
+            print("    -> Generating AI Note (Waiting 10s)...")
+            time.sleep(10)
+            
+            message = generate_invite_message(name, headline, group_name, is_viewer=is_viewer)
+            
+            xpath_msg_box = "//textarea[@name='message']"
+            msg_box = browser.find_element(By.XPATH, xpath_msg_box)
+            
+            human_type(msg_box, message)
+            human_sleep(3, 5)
+            
+            # Tenta enviar a nota
+            xpath_send_button = "//button[contains(@class, 'artdeco-button--primary') and (.//span[text()='Enviar agora'] or .//span[text()='Send now'])]"
+            btn_send = WebDriverWait(browser, 5).until(EC.element_to_be_clickable((By.XPATH, xpath_send_button)))
+            browser.execute_script("arguments[0].click();", btn_send)
+            
+            CONNECTED = True
+            SESSION_CONNECTION_COUNT += 1
+            print(f"-> [SUCCESS] Invite Sent with Note to: {name}\n    Note: {message}")
+            return True
+            
+        except Exception as e:
+            print(f"-> Failed to add note ({e}). Trying 'Send without note'...")
+            # Tenta o fallback: enviar sem nota (se o modal de nota estiver aberto)
+            try:
+                xpath_no_note = "//button[@aria-label='Enviar sem nota' or @aria-label='Send without a note']"
+                btn_no_note = WebDriverWait(browser, 3).until(EC.element_to_be_clickable((By.XPATH, xpath_no_note)))
+                browser.execute_script("arguments[0].click();", btn_no_note)
+                
+                CONNECTED = True
+                SESSION_CONNECTION_COUNT += 1
+                print(f"-> [SUCCESS] Invite Sent (No Note - Note Failed) to: {name}")
+                return True
+            except:
+                # Se falhou a nota e o fallback, tenta fechar o modal
+                try: browser.find_element(By.XPATH, "//button[@aria-label='Fechar' or @aria-label='Dismiss']").click()
+                except: pass
+                print("-> [FAIL] Total failure to send invite. Modal dismissed.")
+                return False
+                
+    # 3. Envio Direto (SEND_AI_NOTE == 0)
+    else:
+        try:
+            # Tenta encontrar o botão de 'Enviar' ou 'Send' no primeiro modal (sem nota)
+            send_selectors_direct = [
+                "//button[contains(@class, 'artdeco-button--primary') and (.//span[text()='Enviar'] or .//span[text()='Send'])]",
+                "//button[contains(@class, 'artdeco-button--primary') and not(@disabled)]" # fallback genérico
+            ]
+            sent = False
+            for sel in send_selectors_direct:
+                try:
+                    btn = WebDriverWait(browser, 3).until(EC.element_to_be_clickable((By.XPATH, sel)))
+                    browser.execute_script("arguments[0].click();", btn)
+                    sent = True
+                    break
+                except: continue
+
+            if sent:
+                CONNECTED = True
+                SESSION_CONNECTION_COUNT += 1
+                print(f"-> [SUCCESS] Invite Sent (NO NOTE - Flag 0) to: {name}")
+                return True
+            else:
+                # Fecha o modal se não conseguir enviar
+                try: browser.find_element(By.XPATH, "//button[@aria-label='Fechar' or @aria-label='Dismiss']").click()
+                except: pass
+                print("-> [FAIL] Total failure to send direct invite. Modal dismissed.")
+                return False
+                
+        except Exception as e:
+            print(f"-> Failed to send direct invite: {e}")
+            return False
+
 
 def run_extraction_process():
     if not os.path.exists(DRIVER_FILENAME): return
@@ -673,28 +1261,62 @@ def run_extraction_process():
         driver.get("https://www.linkedin.com/sales/ssi")
         time.sleep(7)
         
-        # 3. Salva tudo (CSV + DB)
+        # Salva o texto da página SSI ANTES de mudar de página
+        ssi_raw_text = driver.find_element(By.TAG_NAME, "body").text
+        
+        # 3. Coleta dados do Dashboard (Views, Impressions, Searches, Followers)
+        print("📊 Coletando Analytics para Dashboard (incluindo Followers)...")
+        driver.get("https://www.linkedin.com/dashboard/")
+        time.sleep(5)
+        
+        # Inicialização das variáveis para garantir que existam para a chamada da função
+        views = 0
+        impressions = 0
+        search = 0
+        followers = 0 
+        
+        try:
+            txt = driver.find_element(By.TAG_NAME, "body").text
+            
+            # Extração de Views, Impressions, Searches
+            views_match = re.search(r"(\d+)\s+profile views", txt)
+            impressions_match = re.search(r"(\d+)\s+post impressions", txt)
+            search_match = re.search(r"(\d+)\s+search appearances", txt)
+            
+            views = int(views_match.group(1)) if views_match else 0
+            impressions = int(impressions_match.group(1)) if impressions_match else 0
+            search = int(search_match.group(1)) if search_match else 0
+
+            # Extração de Followers
+            items = driver.find_elements(By.CSS_SELECTOR, ".pcd-analytics-view-item")
+            for item in items:
+                if "Followers" in item.text:
+                    try:
+                        count_text = item.find_element(By.CSS_SELECTOR, ".text-body-large-bold").text
+                        followers = int(count_text.replace(',', '').strip())
+                        break
+                    except Exception as e:
+                        print(f"Warning: Failed to extract Followers count from element: {e}")
+                        
+        except Exception as e:
+            print(f"Warning: Failed to extract dashboard metrics or followers: {e}")
+            
+        print(f"Extracted: Views={views}, Impressions={impressions}, Searches={search}, Followers={followers}")
+
+        # 4. Salva tudo (CSV + DB) - AGORA COM 'followers' DEFINIDO
         df = update_ssi_table(
-            driver.find_element(By.TAG_NAME, "body").text, 
+            ssi_raw_text, # Usando o texto SSI salvo no passo 2
             CONNECTION_LIMIT, FOLLOW_LIMIT, PROFILES_TO_SCAN, PAG_ABERTAS, 
             DAILY_LIKE_PROB, DAILY_COMMENT_PROB, SPEED_FACTOR, 
             FEED_POSTS_LIMIT, FEED_LIKE_PROB, FEED_COMMENT_PROB,
-            SESSION_WITHDRAWN_COUNT, total_conns
+            SESSION_WITHDRAWN_COUNT, total_conns,
+            followers # NOVO PARAMETRO - AGORA DEFINIDO
         )
         print("SSI Updated.")
         print(df.tail(1))
 
-        # [NOVO] Coleta dados do Dashboard para o SQLite
-        print("📊 Coletando Analytics para Dashboard...")
-        driver.get("https://www.linkedin.com/dashboard/")
-        time.sleep(5)
-        try:
-            txt = driver.find_element(By.TAG_NAME, "body").text
-            views = int(re.search(r"(\d+)\s+profile views", txt).group(1)) if re.search(r"(\d+)\s+profile views", txt) else 0
-            impressions = int(re.search(r"(\d+)\s+post impressions", txt).group(1)) if re.search(r"(\d+)\s+post impressions", txt) else 0
-            search = int(re.search(r"(\d+)\s+search appearances", txt).group(1)) if re.search(r"(\d+)\s+search appearances", txt) else 0
-            log_analytics_db(views, impressions, search)
-        except: pass
+        # Coleta dados do Dashboard para o SQLite
+        log_analytics_db(views, impressions, search, followers)
 
         driver.quit()
     except Exception as e: 
@@ -708,9 +1330,7 @@ def run_extraction_process():
 # IA & AÇÕES BLINDADAS
 # ==============================================================================
 
-def generate_smart_fallback(name, group_name):
-    clean = re.sub(r'[^a-zA-Z\s]', '', name).strip().split()[0].capitalize() if name and name != "Unknown" else "there"
-    return f"Hi {clean}, noticed we're both in '{group_name.split('|')[0].strip()}'. I work with Data Science, would love to connect!"
+
 
 def get_ai_comment(post_text):
     safe_fallbacks = [
@@ -774,10 +1394,10 @@ def call_robust_ai(prompt, max_len=800):
         "here's the message", "here is the message", "i hope this helps", "here is a message",
         "write a friendly linkedin connection", "i am a data scientist", "write a professional connection message" 
     ]
-    models_to_try = ["gpt-3.5-turbo", "mixtral-8x7b", "gpt-4"] 
+    models_to_try = ["gpt-4"] 
     
     for model in models_to_try:
-        if VERBOSE: print(f"    [AI DEBUG] Trying model: {model}")
+        if VERBOSE: print(f" [AI DEBUG] Trying model: {model}")
         try:
             response = ai_client.chat.completions.create(
                 model=model, messages=[{"role": "user", "content": prompt}]
@@ -804,10 +1424,50 @@ def call_robust_ai(prompt, max_len=800):
     return None
 
 def check_is_top_profile(driver):
+    """
+    Define se o perfil é um 'Top Profile' para fins de Follow (SSI Boost),
+    checando: Badge Top Voice, Contagem de Seguidores/Conexões > 500/1000,
+    e/ou se a Headline contém termos-chave de TI (Data Scientist, ML, etc.).
+    """
+    
+    # 1. VERIFICAÇÃO DE BADGE (Top Voice)
     try:
-        if driver.find_elements(By.CSS_SELECTOR, ".pv-member-badge--for-top-voice"): return True
-        if "K" in driver.find_element(By.CSS_SELECTOR, ".pv-top-card--list").text: return True
+        # Busca pelo badge oficial Top Voice/Voz Líder
+        if driver.find_elements(By.CSS_SELECTOR, ".pv-member-badge--for-top-voice"): 
+            if VERBOSE: print("    -> [Top Profile] Motivo: Badge 'Top Voice' detectado.")
+            return True
     except: pass
+    
+    # 2. VERIFICAÇÃO DE CONTADORES (1K+ ou 500+ conexões)
+    try:
+        # Seletor para os novos layouts de contagem
+        counter_list = driver.find_elements(By.XPATH, "//ul[contains(@class, 'pv-top-card--list') or contains(@class, 'kGmuhOGiyWvadwWIiRwaCpwPqbmrJQYbqqZcM')]//li")
+        
+        for item in counter_list:
+            text = item.text.lower()
+            
+            # Verifica se tem "K" (milhares, indicando grande alcance)
+            if "k" in text:
+                if VERBOSE: print("    -> [Top Profile] Motivo: Contagem 'K' (milhares) detectada.")
+                return True
+                
+            # Verifica se tem o padrão "500+" (que é o máximo que aparece para conexões)
+            if "500+" in text and ("connection" in text or "conex" in text):
+                if VERBOSE: print("    -> [Top Profile] Motivo: 500+ Conexões detectadas.")
+                return True
+                
+    except: pass
+    
+    # 3. VERIFICAÇÃO DE HEADLINE (Alvo Técnico) - USANDO NOVA LISTA
+    try:
+        headline = driver.find_element(By.XPATH, "//div[contains(@class, 'text-body-medium') and contains(@class, 'break-words')]").text.lower()
+        
+        # Usa a variável global HIGH_VALUE_KEYWORDS
+        if any(kw in headline for kw in HIGH_VALUE_KEYWORDS):
+             if VERBOSE: print(f"    -> [Top Profile] Motivo: Headline de Alto Valor Técnico ({headline[:20]}...).")
+             return True
+    except: pass
+        
     return False
 
 def endorse_skills(driver):
@@ -895,133 +1555,8 @@ def filter_profiles(profiles):
     filtered = [p for p in profiles if p not in visited]
     return filtered
 
-def connect_with_user(browser, name, headline, group_name):
-    global SESSION_CONNECTION_COUNT, CONNECTED
-    try:
-        xpath_primary = "//button[.//span[contains(text(), 'Conectar') or contains(text(), 'Connect')]]"
-        btn = browser.find_element(By.XPATH, xpath_primary)
-        click_connect_sequence(browser, btn, name, headline, group_name, is_viewer=False) 
-        return True
-    except Exception as e:
-        if 'invalid session id' in str(e).lower(): raise
-        try:
-            xpath_more = "//button[contains(@aria-label, 'More actions') or .//span[text()='Mais'] or .//span[text()='More']]"
-            WebDriverWait(browser, 3).until(EC.element_to_be_clickable((By.XPATH, xpath_more))).click()
-            human_sleep(2, 4)
-            xpath_drop = "//div[contains(@class, 'dropdown')]//span[contains(text(), 'Conectar') or contains(text(), 'Connect')]"
-            btn_drop = WebDriverWait(browser, 3).until(EC.element_to_be_clickable((By.XPATH, xpath_drop)))
-            click_connect_sequence(browser, btn_drop, name, headline, group_name, is_viewer=False)
-            return True
-        except: return False
 
-def click_connect_sequence(browser, button_element, name, headline, group_name, is_viewer=False):
-    global SESSION_CONNECTION_COUNT, CONNECTED, TEMP_NAME, TEMP_HEADLINE, CURRENT_GROUP_NAME, SEND_AI_NOTE
 
-    # Check if connection limit is reached BEFORE attempting to click the button
-    if SESSION_CONNECTION_COUNT >= CONNECTION_LIMIT:
-        print(f"    -> [LIMIT] Connection attempt skipped. Daily limit ({CONNECTION_LIMIT}) reached.")
-        return False
-        
-    ActionChains(browser).move_to_element(button_element).perform()
-    human_sleep(1, 2)
-    browser.execute_script("arguments[0].click();", button_element)
-    human_sleep(3, 6)
-
-    # LÓGICA DE ENVIO DE NOTA (CORRIGIDA)
-    if SEND_AI_NOTE == 1:
-        try:
-            xpath_add_note = "//button[@aria-label='Adicionar nota' or @aria-label='Add a note']"
-            btn_note = WebDriverWait(browser, 5).until(EC.element_to_be_clickable((By.XPATH, xpath_add_note)))
-            btn_note.click()
-            
-            print("    -> Generating AI Note (Waiting 10s)...")
-            time.sleep(10)
-            
-            if is_viewer:
-                message = generate_invite_message(name, "", "", is_viewer=True)
-            else:
-                message = generate_invite_message(name, headline, group_name)
-                
-            xpath_msg_box = "//textarea[@name='message']"
-            msg_box = browser.find_element(By.XPATH, xpath_msg_box)
-            
-            human_type(msg_box, message)
-            
-            human_sleep(2, 4)
-            
-            send_selectors = [
-                "//button[@aria-label='Enviar agora']",
-                "//button[@aria-label='Send now']",
-                "//button[@aria-label='Enviar convite']",
-                "//button[@aria-label='Send invitation']",
-                "//button[contains(@class, 'artdeco-button--primary') and not(@disabled)]"
-            ]
-            
-            sent = False
-            for sel in send_selectors:
-                try:
-                    btn = browser.find_element(By.XPATH, sel)
-                    if btn.is_displayed():
-                        btn.click()
-                        sent = True
-                        break
-                except: continue
-                
-            if sent:
-                CONNECTED = True
-                SESSION_CONNECTION_COUNT += 1
-                print(f"-> [SUCCESS] Invite Sent with Note to: {name}\n    Note: {message}")
-                take_coffee_break() 
-                return True
-            else:
-                raise Exception("Send button not found")
-                
-        except Exception as e:
-            # Se a nota falhar (erro BMP, IA lixo, ou botão não encontrado), tenta enviar sem nota
-            print(f"-> Failed to add note ({e}). Trying 'Send without note'...")
-            try:
-                browser.find_element(By.XPATH, "//button[@aria-label='Enviar sem nota' or @aria-label='Send without a note']").click()
-                CONNECTED = True
-                SESSION_CONNECTION_COUNT += 1
-                print(f"-> [SUCCESS] Invite Sent (No Note) to: {name}")
-                return True
-            except: 
-                return False # Falha total na conexão
-    
-    # SE SEND_AI_NOTE == 0, TENTA ENVIAR DIRETO
-    else: # SEND_AI_NOTE == 0
-        try:
-            # Procura o botão 'Enviar' ou 'Send' diretamente no pop-up (sem nota)
-            send_selectors_direct = [
-                "//button[@aria-label='Enviar']",
-                "//button[@aria-label='Send']",
-                "//button[contains(@class, 'artdeco-button--primary') and not(@disabled)]" # fallback genérico
-            ]
-            sent = False
-            for sel in send_selectors_direct:
-                try:
-                    btn = WebDriverWait(browser, 3).until(EC.element_to_be_clickable((By.XPATH, sel)))
-                    if btn.is_displayed():
-                        btn.click()
-                        sent = True
-                        break
-                except: continue
-
-            if sent:
-                CONNECTED = True
-                SESSION_CONNECTION_COUNT += 1
-                print(f"-> [SUCCESS] Invite Sent (NO NOTE - Flag 0) to: {name}")
-                take_coffee_break()
-                return True
-            else:
-                 # Fecha o modal e retorna falso se não conseguir enviar
-                 try: browser.find_element(By.XPATH, "//button[@aria-label='Fechar' or @aria-label='Dismiss']").click()
-                 except: pass
-                 return False
-                 
-        except Exception as e:
-            print(f"-> Failed to send direct invite: {e}")
-            return False
 
 def run_reciprocator(browser):
     global SESSION_CONNECTION_COUNT
@@ -1088,9 +1623,14 @@ def run_networker(browser):
     except Exception as e:
         print(f"Erro no Networker: {e}")
 
+# ==============================================================================
+# FUNÇÃO PRINCIPAL DE GRUPO - CORRIGIDO LOG
+# ==============================================================================
+
 def run_group_bot(browser):
     """
-    Versão Corrigida: Implementa Loop While com Scroll para garantir coleta da meta.
+    Versão Corrigida: Implementa Loop While com Scroll e log detalhado
+    do perfil sendo visitado e a ação tomada.
     """
     global SESSION_CONNECTION_COUNT, SESSION_FOLLOW_COUNT, CONNECTED
     if SAVECSV:
@@ -1108,12 +1648,13 @@ def run_group_bot(browser):
     
     profiles_queued = []
     scroll_attempts = 0
-    max_scroll_attempts = 20 # Limite de segurança para não travar
+    max_scroll_attempts = 20
     
     commented_in_group = set()
     visited_file = 'visitedUsers.txt'
     if not os.path.exists(visited_file): open(visited_file, 'w').close()
     with open(visited_file, 'r') as f: visited_list = [l.strip() for l in f]
+
 
     # LOOP DE COLETA COM SCROLL
     while len(profiles_queued) < PROFILES_TO_SCAN and scroll_attempts < max_scroll_attempts:
@@ -1124,7 +1665,7 @@ def run_group_bot(browser):
             if len(profiles_queued) >= PROFILES_TO_SCAN: break
             
             try:
-                # 1. Tenta extrair URL
+                # 1. Tenta extrair URL e Enfileirar
                 url = ""
                 try:
                     el = post.find_element(By.XPATH, ".//a[contains(@href, '/in/') and not(contains(@href, '/miniProfile/'))]")
@@ -1132,10 +1673,10 @@ def run_group_bot(browser):
                     
                     if url and url not in profiles_queued and url not in visited_list: 
                         profiles_queued.append(url)
-                        if VERBOSE: print(f"    [Coletado] {len(profiles_queued)}/{PROFILES_TO_SCAN}")
+                        if VERBOSE: print(f"    [Coletado] {len(profiles_queued)}/{PROFILES_TO_SCAN}")
                 except: pass
 
-                # 2. Interações (apenas se visível)
+                # 2. Interações
                 urn = post.get_attribute("data-urn")
                 if urn and urn not in commented_in_group:
                     browser.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", post)
@@ -1147,13 +1688,10 @@ def run_group_bot(browser):
                     if random.random() < DAILY_COMMENT_PROB:
                         try:
                             text = post.text
-                            if len(text) > 15:
-                                if FEED_ENGLISH_ONLY and not is_text_english(text):
-                                    pass
-                                else:
-                                    comment = get_ai_comment(text)
-                                    if perform_comment(browser, post, comment):
-                                        commented_in_group.add(urn)
+                            if len(text) > 15 and (not FEED_ENGLISH_ONLY or is_text_english(text)):
+                                comment = get_ai_comment(text)
+                                if perform_comment(browser, post, comment):
+                                    commented_in_group.add(urn)
                         except: pass
                     
                     commented_in_group.add(urn) # Marca como processado na sessão
@@ -1161,19 +1699,24 @@ def run_group_bot(browser):
         
         # Se ainda não bateu a meta, SCROLL
         if len(profiles_queued) < PROFILES_TO_SCAN:
-            print(f"    -> Scrollando grupo... (Tentativa {scroll_attempts+1}/{max_scroll_attempts})")
+            print(f"    -> Scrollando grupo... (Tentativa {scroll_attempts+1}/{max_scroll_attempts})")
             browser.execute_script("window.scrollBy(0, 800);")
-            human_sleep(3, 5) # Espera carregar novos posts
+            human_sleep(3, 5) 
             scroll_attempts += 1
+            
+    print(f"\n-> Coleta finalizada. Visitando {len(profiles_queued)} perfis...")
     
-    print(f"-> Coleta finalizada. Visitando {len(profiles_queued)} perfis...")
-    
+    # LOOP DE VISITA COM LOG DETALHADO
     processed = 0
     
     for url in profiles_queued:
         if processed >= PAG_ABERTAS: break
         
-        print(f"\n[{processed+1}] Visitando: {url}")
+        name = "Unknown"
+        headline = ""
+        status = "Visited"
+        CONNECTED = False
+        
         try:
             browser.get(url)
             human_sleep(8, 12)
@@ -1184,57 +1727,58 @@ def run_group_bot(browser):
             try: headline = browser.find_element(By.XPATH, "//div[contains(@class, 'text-body-medium')]").text.lower()
             except: headline = ""
             
-            status = "Visited"
-            CONNECTED = False
+            print(f"\n[{processed}/{PAG_ABERTAS}] Perfil: **{name}** ({headline[:30]}...)")
+            
             endorse_skills(browser)
             
+            # 1. Tenta CONECTAR (se for alvo e houver limite)
             if SESSION_CONNECTION_COUNT < CONNECTION_LIMIT:
                 if any(role in headline for role in TARGET_ROLES):
-                    print(f"    -> [ALVO] {headline[:30]}...")
+                    print(f"    -> [ALVO] Conectando ({SESSION_CONNECTION_COUNT}/{CONNECTION_LIMIT})...")
                     if connect_with_user(browser, name, headline, group_name):
                         status = "Connected"
+                        print(f"    -> [SUCCESS] **Conectado**. Total: {SESSION_CONNECTION_COUNT}/{CONNECTION_LIMIT}")
                         sleep_after_connection()
-                else:
-                    if VERBOSE: print("    -> [SKIP] Não é alvo.")
+                    else:
+                        print(f"    -> [FAIL] Falha ao conectar ou já pendente.")
             
-            if status != "Connected" and SESSION_FOLLOW_COUNT < FOLLOW_LIMIT:
+            # 2. Tenta SEGUIR (se não conectou, for Top Profile e houver limite)
+            if status not in ["Connected"] and SESSION_FOLLOW_COUNT < FOLLOW_LIMIT:
                 if check_is_top_profile(browser):
                     if follow_user(browser):
                         status = "Followed"
                         SESSION_FOLLOW_COUNT += 1
-
+                        print(f"    -> [SUCCESS] **Seguido** (SSI Boost). Total: {SESSION_FOLLOW_COUNT}/{FOLLOW_LIMIT}")
+                elif VERBOSE:
+                    # Este é o local do seu log de SKIP, o erro NÃO ocorre aqui.
+                    print("    -> [SKIP] Não é Top Profile para seguir.")
+            
+            # 3. Log final - AQUI É ONDE A FUNÇÃO log_interaction_db É CHAMADA
+            log_interaction_db(url, name, headline, "Group", status)
+            with open('visitedUsers.txt', 'a') as f: f.write(url + '\n')
+            
+            # Log CSV
             if SAVECSV: 
                 add_to_csv([
-                    name, 
-                    url, 
-                    status, 
-                    str(datetime.datetime.now().time()),
-                    CONNECTION_LIMIT,
-                    FOLLOW_LIMIT,
-                    DAILY_LIKE_PROB,
-                    DAILY_COMMENT_PROB,
-                    PROFILES_TO_SCAN
+                    name, url, status, str(datetime.datetime.now().time()),
+                    CONNECTION_LIMIT, FOLLOW_LIMIT, DAILY_LIKE_PROB, DAILY_COMMENT_PROB, PROFILES_TO_SCAN
                 ], TIME)
-            
-            # [NOVO] Salva no DB também (híbrido)
-            log_interaction_db(url, name, headline, "Group", status)
                 
-            with open(visited_file, 'a') as f: f.write(url + '\n')
-            
         except Exception as e: 
             if 'invalid session id' in str(e).lower():
                 print(f"\n!!! ERRO CRÍTICO DE SESSÃO: {e}")
-                print("!!! Tentando fechar e reabrir o navegador para continuar...")
                 browser.quit()
                 start_browser() 
-                return 
-
+                return
+            
+            # Se o erro for 'log_interaction_db' is not defined, ele virá DAQUI
+            # se a linha de cima não for a causa direta.
             print(f"Erro visita: {e}")
             continue
 
-    print("\n--- FINISHED ---")
-    print(f"Total Connected: {SESSION_CONNECTION_COUNT}")
-    print(f"Total Followed: {SESSION_FOLLOW_COUNT}")
+    print("\n--- GRUPO FINALIZADO ---")
+    print(f"Total Connected na Sessão: {SESSION_CONNECTION_COUNT}/{CONNECTION_LIMIT}")
+    print(f"Total Followed na Sessão: {SESSION_FOLLOW_COUNT}/{FOLLOW_LIMIT}")
 
 def random_mouse_hover(browser):
     try:
@@ -1258,6 +1802,18 @@ def add_to_csv(data, time_str):
 
 # ==============================================================================
 # START
+# ==============================================================================
+
+# ==============================================================================
+# START
+# ==============================================================================
+
+# ==============================================================================
+# START (COM QUICK CONNECTS)
+# ==============================================================================
+
+# ==============================================================================
+# START (COM TRATAMENTO DE ERRO DETALHADO)
 # ==============================================================================
 
 def start_browser():
@@ -1288,30 +1844,57 @@ def start_browser():
             "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         })
 
-        # 1. Feed Interaction
-        interact_with_feed_human(browser)
+        # --- AÇÕES DO BOT ---
         
-        # 2. Stealth & SSI Boosters (NEW)
-        random_browsing_habit(browser) 
-        run_networker(browser) # Happy Birthday / Congrats
-        run_reciprocator(browser) # Connect with viewers
-        
-        if random.random() < 0.3: 
-            withdraw_old_invites(browser)
+        # 1. Conexões Rápidas (Novo modo de bypass de limite)
+        try:
+            run_quick_connects(browser)
+        except Exception as e:
+            print(f"!!! ERRO FATAL: Falha em run_quick_connects. Detalhe: {e}")
+            raise # Lança o erro para fechar o navegador
             
-        # 3. Main Group Logic
-        run_group_bot(browser)
-
-        # CORREÇÃO: Sniper Mode movido para o FINAL para completar o limite
-        if SESSION_CONNECTION_COUNT < CONNECTION_LIMIT:
-             run_sniper_mode(browser)
-        else:
-             print("\n🎯 [SNIPER MODE] Limite diário já atingido. Pulando Sniper Mode.")
+        # 2. Feed Interaction
+        try:
+            interact_with_feed_human(browser)
+        except Exception as e:
+            print(f"!!! ERRO FATAL: Falha em interact_with_feed_human. Detalhe: {e}")
+            raise
         
-    except Exception as e: 
-        print(f"Erro Geral: {e}")
-        if browser: browser.quit()
+        # 3. Stealth & SSI Boosters (NEW)
+        try:
+            random_browsing_habit(browser) 
+            run_networker(browser)
+            run_reciprocator(browser)
+            
+            if random.random() < 0.3: 
+                withdraw_old_invites(browser)
+        except Exception as e:
+            print(f"!!! ERRO FATAL: Falha em Stealth/Boosters. Detalhe: {e}")
+            raise
+            
+        # 4. COLETA SNIPER PROFUNDA
+        try:
+            sniper_targets = collect_sniper_targets(browser)
+        except Exception as e:
+            print(f"!!! ERRO FATAL: Falha em collect_sniper_targets. Detalhe: {e}")
+            raise
 
+        # 5. LÓGICA PRINCIPAL: Varre Grupo + Sniper (para o limite diário)
+        try:
+            run_main_bot_logic(browser, sniper_targets)
+        except Exception as e:
+            print(f"!!! ERRO FATAL: Falha em run_main_bot_logic. Detalhe: {e}")
+            raise
+            
+        # Fim da sessão, fechar o navegador
+        browser.quit()
+
+    except Exception as e: 
+        print(f"\n🛑 ERRO GERAL NO INÍCIO DA AUTOMAÇÃO: {e}")
+        # Garante que o driver feche se ele foi aberto
+        if 'browser' in locals() and browser: 
+            try: browser.quit()
+            except: pass
 
 def launch():
     if not os.path.isfile('visitedUsers.txt'): open('visitedUsers.txt', 'w').close()
