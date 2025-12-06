@@ -1,0 +1,120 @@
+╔══════════════════════════════════════════════════════════════════════╗
+║                     DASHBOARD QUICKSTART                            ║
+║              Gráficos para Todos os Parâmetros do Bot              ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+✅ O DASHBOARD FOI COMPLETAMENTE ATUALIZADO!
+
+Agora visualiza TODOS os parâmetros salvos no CSV:
+  ✨ Total de Conexões (novo)
+  ✨ Total de Followers (novo)
+  ✨ Speed Factor (novo)
+  ✨ Withdrawn Count (novo)
+  ✨ SSI Increase (novo)
+  + todos os outros parâmetros
+
+═══════════════════════════════════════════════════════════════════════
+
+��� COMO EXECUTAR:
+
+Opção 1: Rodar diretamente
+─────────────────────────
+  streamlit run dashboard_app.py
+
+Opção 2: Usar script
+─────────────────────
+  bash run_dashboard.sh
+
+Opção 3: PowerShell (Windows)
+──────────────────────────────
+  streamlit run dashboard_app.py
+
+═══════════════════════════════════════════════════════════════════════
+
+��� O QUE VOCÊ VERÁ:
+
+  KPIs (Topo)
+  ├─ SSI Total Atual
+  ├─ Taxa de Conexão
+  ├─ Total de Conexões ✨
+  └─ Followers Totais ✨
+
+  6 Seções com 40+ Gráficos:
+  1. SSI Components (10 gráficos)
+  2. Interaction Metrics (8 gráficos)
+  3. Conexões & Followers (4 gráficos) ✨
+  4. Probabilidades (6 gráficos)
+  5. Parâmetros Operacionais (4 gráficos) ✨
+  6. Engagement & Conversion (10+ gráficos)
+
+═══════════════════════════════════════════════════════════════════════
+
+��� NOVOS GRÁFICOS:
+
+  Plot: Total Connections Over Time
+  Mostra: Crescimento acumulado de conexões
+  
+  Plot: New Connections Accepted Per Day
+  Mostra: Quantas conexões foram aceitas cada dia
+  
+  Plot: Total Followers Over Time
+  Mostra: Histórico de crescimento de followers
+  
+  Plot: Speed Factor Analysis
+  Mostra: Velocidade de execução (1.5 = 50% mais rápido)
+  
+  Plot: Withdrawn Count (SSI Cleanup)
+  Mostra: Convites retirados para manter SSI limpo
+
+═══════════════════════════════════════════════════════════════════════
+
+��� ESTILO VISUAL:
+
+  Todas as cores seguem a paleta Heineken:
+  • Dark Green (#286529) - Principais
+  • Lime Green (#8ebf48) - Tendências
+  • Red (#ca2819) - Correlações
+  • Off White (#f2f2f1) - Fundo
+
+═══════════════════════════════════════════════════════════════════════
+
+��� ARQUIVOS:
+
+  dashboard_app.py ................... Dashboard novo (ATIVO) ✅
+  dashboard_app_old.py .............. Backup do antigo
+  ssi_history.csv ................... Dados diários (CSV)
+  bot_data.db ....................... Banco de dados (SQLite)
+  run_dashboard.sh .................. Script para executar
+  DASHBOARD_UPDATE.md ............... Documentação
+  DASHBOARD_SUMMARY.md .............. Resumo de mudanças
+  DASHBOARD_CHARTS_COMPLETE.md ...... Lista completa de gráficos
+
+═══════════════════════════════════════════════════════════════════════
+
+⚠️  REQUISITOS:
+
+  Certifique-se de ter instalado:
+  pip install streamlit
+
+═══════════════════════════════════════════════════════════════════════
+
+��� LINK DE ACESSO:
+
+  Após executar, acesse:
+  http://localhost:8501
+
+═══════════════════════════════════════════════════════════════════════
+
+✨ RESUMO:
+
+  ANTES: 24 gráficos, faltavam dados novos ❌
+  DEPOIS: 40+ gráficos, todos os dados ✅
+
+═══════════════════════════════════════════════════════════════════════
+
+��� PRÓXIMO PASSO:
+
+  Execute agora:
+  streamlit run dashboard_app.py
+
+═══════════════════════════════════════════════════════════════════════
