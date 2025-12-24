@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import csv
 import datetime
+import functools
 import gc
 import os
 import random
@@ -10,7 +11,9 @@ import sys
 import time
 from datetime import timedelta
 
+# Força o Python a mostrar o print imediatamente, linha por linha
 import pandas as pd
+from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as EdgeService
 from selenium.webdriver.common.action_chains import ActionChains
@@ -20,13 +23,15 @@ from selenium.webdriver.edge.options import Options as EdgeOptions
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
+sys.stdout.reconfigure(line_buffering=True)
+# Isso obriga todo print a aparecer imediatamente
+print = functools.partial(print, flush=True)
 # Corrigir encoding no Windows para suportar emojis
 if sys.platform == "win32":
     import io
 
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
-from bs4 import BeautifulSoup
 
 # --- BIBLIOTECAS EXTERNAS ---
 try:
@@ -64,7 +69,7 @@ BASE_QUICK_CONNECT_URL = "https://www.linkedin.com/search/results/people/?facetN
 # ==============================================================================
 
 # 2. VELOCIDADE
-SPEED_FACTOR = 4
+SPEED_FACTOR = 4.5
 DRIVER_FILENAME = "msedgedriver.exe"
 
 # 3. IA & IDIOMA
@@ -141,11 +146,19 @@ TARGET_ROLES = [
 
 # 5. LIMITES MANUAIS (Fallback se AUTO_REGULATE = False)
 LIMITS_CONFIG = {
-    "CONNECTION": (10, 18),
+    "CONNECTION": (10, 15),
     "FOLLOW": (10, 15),
-    "PROFILES_SCAN": (40, 50),
-    "FEED_POSTS": (40, 50),
+    "PROFILES_SCAN": (30, 50),
+    "FEED_POSTS": (30, 50),
 }
+
+# 5. LIMITES MANUAIS (Fallback se AUTO_REGULATE = False)
+# LIMITS_CONFIG = {
+#     "CONNECTION": (0, 1),
+#     "FOLLOW": (3, 5),
+#     "PROFILES_SCAN": (4, 5),
+#     "FEED_POSTS": (4, 5),
+# }
 
 
 QUICK_CONNECT_LIMIT = int(
@@ -417,7 +430,7 @@ if AUTO_REGULATE:
 # ==============================================================================
 
 CONNECTION_LIMIT = int(
-    random.randint(LIMITS_CONFIG["CONNECTION"][0], LIMITS_CONFIG["CONNECTION"][1])
+    random.randint(LIMITS_CONFIG["CONNECTION"][0], LIMITS_CONFIG["CONNECTION"][1]) - 10
 )
 FOLLOW_LIMIT = int(
     random.randint(LIMITS_CONFIG["FOLLOW"][0], LIMITS_CONFIG["FOLLOW"][1])
@@ -466,6 +479,128 @@ LOGS_DIR = os.path.join(os.path.dirname(__file__), "..", "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
 browser = None
 # Exemplo de como definir a variável global (Adicione no seu painel de controle)
+
+# ==============================================================================
+# 🚀 NOVAS FUNÇÕES DE SSI BOOST (ADICIONE ISSO AO SEU CÓDIGO)
+# ==============================================================================
+
+
+def natural_mouse_move(browser, element):
+    """
+    Simula o movimento humano: move até o elemento, passa um pouco (overshoot),
+    pausa para 'reação' e corrige a mira antes de clicar.
+    """
+    try:
+        # 1. Cria a cadeia de ações
+        actions = ActionChains(browser)
+
+        # 2. Move para o elemento (movimento macro)
+        actions.move_to_element(element)
+
+        # 3. Adiciona o "Erro Humano" (Overshoot)
+        # Simula que o mouse passou ou não chegou exatamente no pixel central (3 a 7 pixels de erro)
+        x_jitter = random.randint(-7, 7)
+        y_jitter = random.randint(-7, 7)
+
+        # Move o offset (erro)
+        actions.move_by_offset(x_jitter, y_jitter)
+
+        # 4. Pausa de "Micro-reação" (o cérebro processando que o mouse parou)
+        actions.pause(random.uniform(0.1, 0.3))
+
+        # 5. Corrige a mira de volta para o centro do elemento (opcional, mas bom para botões pequenos)
+        # Se o botão for grande, nem precisa corrigir, mas por segurança corrigimos:
+        actions.move_by_offset(-x_jitter, -y_jitter)
+
+        # Executa tudo
+        actions.perform()
+
+    except Exception:
+        # Fallback de segurança: se a firula falhar, faz o básico
+        # print(f"Erro no mouse natural: {e}") # Descomente para debug
+        try:
+            ActionChains(browser).move_to_element(element).perform()
+        except:
+            pass  # Se até isso falhar, deixa o código principal tentar o JS click depois
+
+
+def human_reading_behavior(browser):
+    """
+    Simula leitura humana: rola a tela para baixo, pausa para ler,
+    e as vezes volta um pouco para cima (releitura).
+    """
+    try:
+        print("    -> [SSI] Simulando comportamento de leitura...")
+        # Varia entre 2 e 4 movimentos
+        for _ in range(random.randint(2, 4)):
+            scroll_amount = random.randint(200, 550)
+            browser.execute_script(f"window.scrollBy(0, {scroll_amount});")
+            human_sleep(2, 4)
+
+            # 30% de chance de voltar um pouco a tela (releitura)
+            if random.random() < 0.30:
+                browser.execute_script("window.scrollBy(0, -150);")
+                human_sleep(1, 2)
+    except:
+        pass
+
+
+def micro_engagement_feed(browser):
+    """
+    Quebra o padrão de robô indo ao feed principal para simular um usuário
+    distraído ou engajado, rolando um pouco e voltando.
+    """
+    try:
+        print("  -> [SSI BOOST] Micro-engajamento distribuído no feed...")
+        main_window = browser.current_window_handle
+        # Abre feed em nova aba para não perder o ponto da lista
+        browser.execute_script("window.open('https://www.linkedin.com/feed/');")
+        browser.switch_to.window(browser.window_handles[-1])
+
+        human_sleep(8, 15)
+
+        # Rola o feed aleatoriamente
+        for _ in range(random.randint(1, 3)):
+            browser.execute_script(f"window.scrollBy(0, {random.randint(300, 700)});")
+            human_sleep(2, 5)
+
+        browser.close()
+        browser.switch_to.window(main_window)
+    except:
+        pass
+
+
+def strategic_endorse_skills(driver):
+    """
+    Endossa APENAS skills que estão na sua lista de HIGH_VALUE_KEYWORDS.
+    Isso aumenta a relevância do seu perfil para o algoritmo.
+    """
+    try:
+        # Rola até o fundo onde geralmente ficam as skills
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight * 0.70);")
+        human_sleep(3, 5)
+
+        btns = driver.find_elements(
+            By.XPATH,
+            "//button[contains(@aria-label, 'Endorse') or contains(@aria-label, 'Recomendar')]",
+        )
+        endorsed_count = 0
+
+        for btn in btns:
+            if endorsed_count >= 2:
+                break  # Limite de 2 por pessoa
+
+            skill_name = btn.get_attribute("aria-label").lower()
+            # Só clica se a skill tiver a ver com a sua área
+            if any(kw in skill_name for kw in HIGH_VALUE_KEYWORDS):
+                driver.execute_script("arguments[0].click();", btn)
+                print(
+                    f"    -> [SSI] Skill '{skill_name[:20]}...' endossada estrategicamente!"
+                )
+                human_sleep(2, 4)
+                endorsed_count += 1
+    except:
+        pass
 
 
 def get_factored_time(seconds):
@@ -870,9 +1005,12 @@ def run_sniper_mode(browser):
 
 def run_main_bot_logic(browser, sniper_targets=None):
     """
-    Combina coleta de perfis do grupo com alvos Sniper e varre a lista completa.
+    Combina coleta de perfis do grupo com alvos Sniper e varre a lista completa
+    aplicando comportamento humano avançado (SSI Boost).
     """
     global SESSION_CONNECTION_COUNT, SESSION_FOLLOW_COUNT, CONNECTED
+    # Globais de estatísticas da sessão
+    global SESSION_GROUP_LIKES, SESSION_GROUP_COMMENTS
 
     if SAVECSV:
         if not os.path.exists("CSV"):
@@ -890,14 +1028,17 @@ def run_main_bot_logic(browser, sniper_targets=None):
         ]
         create_csv(csv_header, TIME)
 
-    # CORREÇÃO DE SEGURANÇA: Garante que sniper_targets seja uma lista vazia se for None
+    # Garante lista vazia se None
     if sniper_targets is None:
         sniper_targets = []
 
-    # 1. COLETA E INTERAÇÃO NO GRUPO
+    # ---------------------------------------------------------
+    # 1. NAVEGAÇÃO E COLETA NO GRUPO
+    # ---------------------------------------------------------
     print(f"-> Group: {GROUP_URL}")
     browser.get(GROUP_URL)
     human_sleep(10, 15)
+
     try:
         group_name = browser.find_element(By.TAG_NAME, "h1").text
     except:
@@ -908,236 +1049,193 @@ def run_main_bot_logic(browser, sniper_targets=None):
     profiles_queued = []
     scroll_attempts = 0
     max_scroll_attempts = 20
-
     commented_in_group = set()
+
     visited_file = os.path.join(DATA_DIR, "visitedUsers.txt")
-    os.makedirs(DATA_DIR, exist_ok=True)
     if not os.path.exists(visited_file):
         open(visited_file, "w").close()
     with open(visited_file, "r") as f:
         visited_list = [l.strip() for l in f]
 
-    # LOOP DE COLETA COM SCROLL (do Grupo)
+    # LOOP DE COLETA (SCROLL + EXTRAÇÃO)
     while (
         len(profiles_queued) < PROFILES_TO_SCAN
         and scroll_attempts < max_scroll_attempts
     ):
+        # Tentativa de pegar posts
         posts = browser.find_elements(By.CLASS_NAME, "feed-shared-update-v2")
 
-        # Debug: mostrar quantos posts encontrados
-        if scroll_attempts == 0 and len(posts) == 0:
-            print(
-                "    [DEBUG] Nenhum post encontrado com CLASS 'feed-shared-update-v2'. Tentando alternativas..."
-            )
-            # Tenta alternativa
+        # Fallback se não achar pela classe padrão
+        if not posts:
             posts = browser.find_elements(
                 By.XPATH,
                 "//div[contains(@class, 'feed')]//div[contains(@class, 'update')]",
             )
 
-        if len(posts) > 0 and scroll_attempts == 0:
-            print(f"    [DEBUG] {len(posts)} posts encontrados no grupo")
-
-        # Se ainda não achou posts, tenta com BeautifulSoup
-        if len(posts) == 0 and scroll_attempts == 0:
+        # Fallback BeautifulSoup (se o Selenium falhar na DOM inicial)
+        if not posts and scroll_attempts == 0:
             try:
                 soup = BeautifulSoup(browser.page_source, "html.parser")
-                profile_links = []
                 for link in soup.find_all("a", href=True):
                     href = link["href"]
                     if "/in/" in href and "/miniProfile/" not in href:
                         clean_link = href.split("?")[0]
+                        if not clean_link.startswith("http"):
+                            clean_link = "https://www.linkedin.com" + clean_link
+
                         if (
-                            clean_link not in profile_links
+                            clean_link not in profiles_queued
                             and clean_link not in visited_list
-                            and clean_link not in profiles_queued
                         ):
-                            profile_links.append(clean_link)
                             profiles_queued.append(clean_link)
                             if len(profiles_queued) >= PROFILES_TO_SCAN:
                                 break
-
-                if len(profile_links) > 0:
-                    print(
-                        f"    [DEBUG] {len(profile_links)} links de perfil extraídos com BeautifulSoup"
-                    )
-                    break  # Sai do loop se encontrou links com BS
             except Exception as e:
-                print(f"    [DEBUG] Erro ao usar BeautifulSoup: {e}")
+                print(f"    [DEBUG] Erro BeautifulSoup: {e}")
 
+        # Processamento dos Posts (Coleta + Interação)
         for post in posts:
             if len(profiles_queued) >= PROFILES_TO_SCAN:
                 break
-
             try:
-                # Tenta extrair URL e Enfileirar (múltiplas estratégias)
-                url = ""
+                # Extração de URL
                 try:
-                    # Estratégia 1: XPath direto para perfil
-                    el = post.find_element(
+                    url_el = post.find_element(
                         By.XPATH,
                         ".//a[contains(@href, '/in/') and not(contains(@href, '/miniProfile/'))]",
                     )
-                    url = el.get_attribute("href").split("?")[0]
-                except Exception:
+                    url = url_el.get_attribute("href").split("?")[0]
+
+                    if url and url not in profiles_queued and url not in visited_list:
+                        profiles_queued.append(url)
+                        if VERBOSE:
+                            print(
+                                f"    [Coletado Grupo] {len(profiles_queued)}/{PROFILES_TO_SCAN}"
+                            )
+                except:
                     pass
 
-                if not url:
-                    try:
-                        # Estratégia 2: Procurar pelo data-member-ocid
-                        el = post.find_element(By.XPATH, ".//a[@data-member-ocid]")
-                        href = el.get_attribute("href")
-                        if "/in/" in href:
-                            url = href.split("?")[0]
-                    except Exception:
-                        pass
-
-                if not url:
-                    try:
-                        # Estratégia 3: Buscar por qualquer link que tenha /in/
-                        all_links = post.find_elements(By.TAG_NAME, "a")
-                        for link in all_links:
-                            href = link.get_attribute("href")
-                            if href and "/in/" in href and "/miniProfile/" not in href:
-                                url = href.split("?")[0]
-                                break
-                    except Exception:
-                        pass
-
-                if url and url not in profiles_queued and url not in visited_list:
-                    profiles_queued.append(url)
-                    if VERBOSE:
-                        print(
-                            f"    [Coletado Grupo] {len(profiles_queued)}/{PROFILES_TO_SCAN}"
-                        )
-
-                # Interações (Likes/Comments)
+                # Interações Rápidas no Feed do Grupo (Like/Comment)
                 urn = post.get_attribute("data-urn")
                 if urn and urn not in commented_in_group:
+                    # Scroll até o post para interação real
                     browser.execute_script(
                         "arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});",
                         post,
                     )
                     human_sleep(1, 2)
-                    if random.random() < DAILY_LIKE_PROB:
-                        if perform_reaction_varied(browser, post, "group"):
-                            SESSION_GROUP_LIKES += 1
-                    if random.random() < DAILY_COMMENT_PROB:
-                        try:
-                            text = post.text
-                            if len(text) > 15 and (
-                                not FEED_ENGLISH_ONLY or is_text_english(text)
-                            ):
-                                comment = get_ai_comment(text)
-                                if perform_comment(browser, post, comment, "group"):
-                                    commented_in_group.add(urn)
-                                    SESSION_GROUP_COMMENTS += 1
-                        except Exception:
-                            pass
 
-                    commented_in_group.add(urn)
+                    if random.random() < DAILY_LIKE_PROB:
+                        perform_reaction_varied(browser, post, "group")
+                        try:
+                            SESSION_GROUP_LIKES += 1
+                        except:
+                            pass  # Evita erro se a var global não existir
+
+                    if random.random() < DAILY_COMMENT_PROB:
+                        text = post.text
+                        if len(text) > 20 and is_text_english(text):
+                            comment = get_ai_comment(text)
+                            if perform_comment(browser, post, comment, "group"):
+                                commented_in_group.add(urn)
+                                try:
+                                    SESSION_GROUP_COMMENTS += 1
+                                except:
+                                    pass
+
+                    commented_in_group.add(urn)  # Marca como visto
             except:
                 continue
 
+        # Scroll e Limpeza
         if len(profiles_queued) < PROFILES_TO_SCAN:
             print(
-                f"    -> Scrollando grupo... (Tentativa {scroll_attempts + 1}/{max_scroll_attempts})"
+                f"    -> Scrollando grupo... ({scroll_attempts + 1}/{max_scroll_attempts})"
             )
             try:
                 browser.execute_script("window.scrollBy(0, 800);")
-                human_sleep(5, 8)  # Aumentado de 3-5 para 5-8 segundos
-                gc.collect()  # NOVO: Limpa memória após cada scroll para evitar crashes
+                human_sleep(5, 8)
+                gc.collect()  # Limpeza de memória crítica
             except Exception as e:
-                print(f"    [ERRO SCROLL] {str(e)[:80]}... Interrompendo coleta.")
-                break  # Sai do loop se scroll falhar (tab crash ou DOM issue)
+                print(f"    [ERRO SCROLL] {str(e)[:50]}... Interrompendo coleta.")
+                break
             scroll_attempts += 1
 
-    # 2. ADICIONA ALVOS SNIPER À LISTA DE PERFIS
+    # ---------------------------------------------------------
+    # 2. INTEGRAÇÃO COM TARGETS DO SNIPER
+    # ---------------------------------------------------------
     if sniper_targets:
         print(f"-> Incorporando {len(sniper_targets)} alvos Sniper...")
-        # Adiciona alvos sniper apenas se não foram visitados ou coletados ainda
         for url in sniper_targets:
             if url not in profiles_queued and url not in visited_list:
                 profiles_queued.append(url)
 
-    total_profiles_to_visit = min(PAG_ABERTAS, len(profiles_queued))
-    print(
-        f"\n-> Varredura finalizada. Visitando **{total_profiles_to_visit}** perfis (Grupo + Sniper)..."
-    )
+    total_profiles = min(PAG_ABERTAS, len(profiles_queued))
+    print(f"\n-> Iniciando visitas otimizadas em {total_profiles} perfis...")
 
-    # 3. LOOP DE VISITA COM LOG DETALHADO (Único para todos os perfis)
+    # ---------------------------------------------------------
+    # 3. LOOP DE VISITAS OTIMIZADO (COM TEMPERO SSI)
+    # ---------------------------------------------------------
     processed = 0
-
     for url in profiles_queued:
         if processed >= PAG_ABERTAS:
             break
 
+        # [TEMPERO 1] Pausa de Micro-Engajamento a cada 6 perfis
+        # Simula usuário indo checar o feed rapidinho
+        if processed > 0 and processed % 6 == 0:
+            micro_engagement_feed(browser)
+
+        source = "Sniper" if url in sniper_targets else "Group"
         name = "Unknown"
         headline = ""
         status = "Visited"
-        CONNECTED = False
-
-        # Determina a origem para o log DB
-        source = "Group"
-        if url in sniper_targets:
-            source = "Sniper"
 
         try:
             browser.get(url)
-            human_sleep(8, 12)
-            processed += 1
+            # Aumentado o tempo inicial para garantir carregamento total
+            human_sleep(6, 10)
 
+            # [TEMPERO 2] Comportamento de Leitura Humana (Dwell Time)
+            human_reading_behavior(browser)
+
+            # Extração de Dados
             try:
                 name = browser.title.split("|")[0].strip()
-            except:
-                name = "Unknown"
-            try:
                 headline = browser.find_element(
                     By.XPATH, "//div[contains(@class, 'text-body-medium')]"
                 ).text.lower()
             except:
-                headline = ""
+                pass  # Mantém valores padrão
 
-            print(
-                f"\n[{processed}/{total_profiles_to_visit}] Perfil ({source}): **{name}** ({headline[:30]}...)"
-            )
+            processed += 1
+            print(f"[{processed}/{total_profiles}] ({source}) {name}")
 
-            endorse_skills(browser)
+            # [TEMPERO 3] Endosso Estratégico (Só skills do nicho)
+            strategic_endorse_skills(browser)
 
-            # 1. Tenta CONECTAR (se for alvo e houver limite)
+            # Lógica de Conexão
             if SESSION_CONNECTION_COUNT < CONNECTION_LIMIT:
                 if any(role in headline for role in TARGET_ROLES):
-                    print(
-                        f"    -> [ALVO] Conectando ({SESSION_CONNECTION_COUNT}/{CONNECTION_LIMIT})..."
-                    )
+                    print("    -> [ALVO] Tentando conectar...")
                     if connect_with_user(browser, name, headline, group_name):
                         status = "Connected"
-                        print(
-                            f"    -> [SUCCESS] **Conectado**. Total: {SESSION_CONNECTION_COUNT}/{CONNECTION_LIMIT}"
-                        )
+                        SESSION_CONNECTION_COUNT += 1
                         sleep_after_connection()
-                    else:
-                        print("    -> [FAIL] Falha ao conectar ou já pendente.")
 
-            # 2. Tenta SEGUIR (se não conectou, for Top Profile e houver limite)
-            if status not in ["Connected"] and SESSION_FOLLOW_COUNT < FOLLOW_LIMIT:
+            # Lógica de Follow (SSI Boost para Top Profiles)
+            if status == "Visited" and SESSION_FOLLOW_COUNT < FOLLOW_LIMIT:
                 if check_is_top_profile(browser):
                     if follow_user(browser):
                         status = "Followed"
                         SESSION_FOLLOW_COUNT += 1
-                        print(
-                            f"    -> [SUCCESS] **Seguido** (SSI Boost). Total: {SESSION_FOLLOW_COUNT}/{FOLLOW_LIMIT}"
-                        )
-                elif VERBOSE:
-                    print("    -> [SKIP] Não é Top Profile para seguir.")
+                        print("    -> [SSI] Seguiu Top Profile.")
 
-            # 3. Log final
+            # Logs Finais
             log_interaction_db(url, name, headline, source, status)
-            visited_file_path = os.path.join(DATA_DIR, "visitedUsers.txt")
-            with open(visited_file_path, "a") as f:
+            with open(visited_file, "a") as f:
                 f.write(url + "\n")
 
-            # Log CSV
             if SAVECSV:
                 add_to_csv(
                     [
@@ -1154,13 +1252,15 @@ def run_main_bot_logic(browser, sniper_targets=None):
                     TIME,
                 )
 
+            # Limpeza de memória a cada perfil para evitar crash do navegador
+            gc.collect()
+
         except Exception as e:
             if "invalid session id" in str(e).lower():
                 print(f"\n!!! ERRO CRÍTICO DE SESSÃO: {e}")
                 browser.quit()
-                start_browser()
-                return
-            print(f"Erro visita: {e}")
+                return  # Encerra para reiniciar
+            print(f"Erro ao visitar {url}: {e}")
             continue
 
     print("\n--- VARREDURA FINALIZADA ---")
@@ -1468,7 +1568,7 @@ def run_quick_connects(browser):
 
 
 def update_ssi_table(
-    raw_text,
+    html_content,  # AGORA RECEBE O HTML BRUTO, NÃO SÓ O TEXTO
     connection_limit,
     follow_limit,
     profiles_to_scan,
@@ -1481,41 +1581,78 @@ def update_ssi_table(
     feed_comment_prob,
     withdrawn_count,
     current_total_connections,
-    current_total_followers,  # 14º PARÂMETRO
+    current_total_followers,
     file_path=None,
 ):
     if file_path is None:
         file_path = os.path.join(DATA_DIR, "ssi_history.csv")
+
     today = datetime.datetime.now().strftime("%Y-%m-%d")
-    total_match = re.search(r"(\d+)\s+out of 100", raw_text)
-    total_ssi = float(total_match.group(1)) if total_match else 0.0
 
-    industry_rank_match = re.search(r"Industry SSI\s+rank\s+Top\s+(\d+)%", raw_text)
-    industry_rank = int(industry_rank_match.group(1)) if industry_rank_match else 0
-    network_rank_match = re.search(r"Network SSI\s+rank\s+Top\s+(\d+)%", raw_text)
-    network_rank = int(network_rank_match.group(1)) if network_rank_match else 0
+    # --- NOVA LÓGICA DE EXTRAÇÃO VIA BEAUTIFULSOUP (PRECISÃO MÁXIMA) ---
+    soup = BeautifulSoup(html_content, "html.parser")
 
-    def extract_score(component_name, text):
-        regex = r"(\d+(?:[\.,]\d+)?)\s+" + re.escape(component_name)
-        match = re.search(regex, text)
-        return float(match.group(1).replace(",", ".")) if match else 0.0
+    # 1. Total SSI (Busca no caption do gráfico)
+    try:
+        total_ssi_elem = soup.select_one(
+            ".user-ssi-score__donut-chart-caption .ssi-score__value"
+        )
+        total_ssi = float(total_ssi_elem.text.strip()) if total_ssi_elem else 0.0
+    except:
+        total_ssi = 0.0
 
-    # Cálculos Comparativos
+    # 2. Ranks (Industry & Network)
+    industry_rank = 0
+    network_rank = 0
+    try:
+        # Procura os blocos de rank
+        ranks = soup.find_all("div", class_="ssi-rank")
+        for rank in ranks:
+            text = rank.text.lower()
+            val_elem = rank.find("span", class_="t-40")  # Classe do número grande
+            if val_elem:
+                val = int(val_elem.text.strip())
+                if "industry" in text:
+                    industry_rank = val
+                elif "network" in text:
+                    network_rank = val
+    except:
+        pass
+
+    # 3. Os 4 Pilares (Extraídos direto da barra de progresso)
+    def get_progress_value(elem_id):
+        try:
+            elem = soup.find("progress", id=elem_id)
+            if elem and elem.has_attr("value"):
+                return float(elem["value"])
+        except:
+            pass
+        return 0.0
+
+    brand_score = get_progress_value("establish-brand__sub-score-bar")
+    people_score = get_progress_value("find-people__sub-score-bar")
+    insights_score = get_progress_value("engage-with-insights__sub-score-bar")
+    relationships_score = get_progress_value("build-relationships__sub-score-bar")
+
+    print(
+        f"🔍 SSI EXTRAÍDO: Total={total_ssi} | Brand={brand_score} | People={people_score} | Insights={insights_score} | Build={relationships_score}"
+    )
+
+    # --- FIM DA EXTRAÇÃO ---
+
+    # Cálculos Comparativos (Mantido igual)
     new_connections_gained = 0
     ssi_increase = 0.0
 
     if os.path.exists(file_path):
         try:
             existing_df = pd.read_csv(file_path)
-
-            # Filtra a última entrada que NÃO é de hoje para ser o ponto de comparação.
             existing_df["Date"] = pd.to_datetime(
                 existing_df["Date"], errors="coerce"
             ).dt.strftime("%Y-%m-%d")
             last_day_df = existing_df[existing_df["Date"] != today]
 
             if not last_day_df.empty:
-                # CORREÇÃO CRÍTICA: Trata o caso da coluna 'Total_Connections' não existir em arquivos antigos
                 last_valid_total = 0
                 if "Total_Connections" in last_day_df.columns:
                     last_valid_total = (
@@ -1539,10 +1676,8 @@ def update_ssi_table(
 
                 if last_ssi > 0:
                     ssi_increase = total_ssi - last_ssi
-
         except Exception as e:
-            print(f"Warning: Failed to calculate SSI metrics from CSV: {e}")
-            pass
+            print(f"Warning: Failed to calculate metrics: {e}")
 
     new_data = {
         "Date": [today],
@@ -1550,10 +1685,10 @@ def update_ssi_table(
         "SSI_Increase": [ssi_increase],
         "Industry_Rank": [industry_rank],
         "Network_Rank": [network_rank],
-        "Brand": [extract_score("Establish your professional brand", raw_text)],
-        "People": [extract_score("Find the right people", raw_text)],
-        "Insights": [extract_score("Engage with insights", raw_text)],
-        "Relationships": [extract_score("Build relationships", raw_text)],
+        "Brand": [brand_score],
+        "People": [people_score],
+        "Insights": [insights_score],
+        "Relationships": [relationships_score],
         "Connection_Limit": [connection_limit],
         "Follow_Limit": [follow_limit],
         "Profiles_To_Scan": [profiles_to_scan],
@@ -1566,24 +1701,20 @@ def update_ssi_table(
         "Withdrawn_Count": [withdrawn_count],
         "Total_Connections": [current_total_connections],
         "New_Connections_Accepted": [new_connections_gained],
-        "Total_Followers": [current_total_followers],  # NOVO CAMPO AQUI
+        "Total_Followers": [current_total_followers],
     }
     new_df = pd.DataFrame(new_data)
 
     if os.path.exists(file_path):
         existing_df = pd.read_csv(file_path)
-
-        # Ensure 'Date' is clean for comparison before filtering
         existing_df["Date"] = pd.to_datetime(
             existing_df["Date"], errors="coerce"
         ).dt.strftime("%Y-%m-%d")
 
-        # GARANTE que todas as colunas novas existam no DataFrame antigo (evita erro de concat)
         for col in new_df.columns:
             if col not in existing_df.columns:
                 existing_df[col] = pd.NA
 
-        # Remove existing data for today before appending new data
         if today in existing_df["Date"].values:
             existing_df = existing_df[existing_df["Date"] != today]
         updated_df = pd.concat([existing_df, new_df], ignore_index=True)
@@ -1976,6 +2107,7 @@ def click_connect_sequence(
                     btn = WebDriverWait(browser, 3).until(
                         EC.element_to_be_clickable((By.XPATH, sel))
                     )
+                    natural_mouse_move(browser, btn)
                     browser.execute_script("arguments[0].click();", btn)
                     sent = True
                     break
@@ -2013,6 +2145,23 @@ def run_extraction_process():
         pass
 
     opts = EdgeOptions()
+
+    # --- [NOVO] ROTAÇÃO DE USER-AGENT E ANTI-FINGERPRINT ---
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
+    ]
+    agent = random.choice(user_agents)
+    opts.add_argument(f"user-agent={agent}")
+
+    # Randomiza tamanho da janela para evitar detecção por resolução padrão
+    width = random.randint(1024, 1920)
+    height = random.randint(768, 1080)
+    opts.add_argument(f"--window-size={width},{height}")
+    # -------------------------------------------------------
+
     ud = os.path.join(
         os.environ["USERPROFILE"], "AppData", "Local", "Microsoft", "Edge", "User Data"
     )
@@ -2029,18 +2178,19 @@ def run_extraction_process():
         print(f"Total Connections Detected: {total_conns}")
 
         # 2. Pega SSI
+        print("📊 Acessando página de SSI...")
         driver.get("https://www.linkedin.com/sales/ssi")
-        # time.sleep(7)
+        # Pequeno sleep para garantir renderização do JS
+        time.sleep(5)
 
-        # Salva o texto da página SSI ANTES de mudar de página
-        ssi_raw_text = driver.find_element(By.TAG_NAME, "body").text
+        # O SEGREDO: Pegar o page_source (HTML completo), não o .text
+        ssi_html_source = driver.page_source
 
-        # 3. Coleta dados do Dashboard (Views, Impressions, Searches, Followers)
-        print("📊 Coletando Analytics para Dashboard (incluindo Followers)...")
+        # 3. Coleta dados do Dashboard
+        print("📊 Coletando Analytics para Dashboard...")
         driver.get("https://www.linkedin.com/dashboard/")
-        # time.sleep(5)
+        time.sleep(3)
 
-        # Inicialização das variáveis para garantir que existam para a chamada da função
         views = 0
         impressions = 0
         search = 0
@@ -2048,41 +2198,35 @@ def run_extraction_process():
 
         try:
             txt = driver.find_element(By.TAG_NAME, "body").text
+            # Regex simples para dashboard (costuma funcionar bem aqui)
+            if m := re.search(r"(\d+)\s+profile views", txt):
+                views = int(m.group(1))
+            if m := re.search(r"(\d+)\s+post impressions", txt):
+                impressions = int(m.group(1))
+            if m := re.search(r"(\d+)\s+search appearances", txt):
+                search = int(m.group(1))
 
-            # Extração de Views, Impressions, Searches
-            views_match = re.search(r"(\d+)\s+profile views", txt)
-            impressions_match = re.search(r"(\d+)\s+post impressions", txt)
-            search_match = re.search(r"(\d+)\s+search appearances", txt)
-
-            views = int(views_match.group(1)) if views_match else 0
-            impressions = int(impressions_match.group(1)) if impressions_match else 0
-            search = int(search_match.group(1)) if search_match else 0
-
-            # Extração de Followers
-            items = driver.find_elements(By.CSS_SELECTOR, ".pcd-analytics-view-item")
-            for item in items:
-                if "Followers" in item.text:
-                    try:
-                        count_text = item.find_element(
-                            By.CSS_SELECTOR, ".text-body-large-bold"
-                        ).text
-                        followers = int(count_text.replace(",", "").strip())
-                        break
-                    except Exception as e:
-                        print(
-                            f"Warning: Failed to extract Followers count from element: {e}"
-                        )
+            # Followers via seletor específico
+            try:
+                # Tenta pegar followers de forma mais genérica se a classe mudar
+                followers_elem = driver.find_element(
+                    By.XPATH,
+                    "//*[contains(text(), 'Followers')]/preceding-sibling::div | //*[contains(text(), 'Followers')]/../div[1]",
+                )
+                followers = int(followers_elem.text.replace(",", "").strip())
+            except:
+                # Fallback
+                if m := re.search(r"(\d+)\s+Followers", txt):
+                    followers = int(m.group(1))
 
         except Exception as e:
-            print(f"Warning: Failed to extract dashboard metrics or followers: {e}")
+            print(f"Warning: Dashboard extraction issues: {e}")
 
-        print(
-            f"Extracted: Views={views}, Impressions={impressions}, Searches={search}, Followers={followers}"
-        )
+        print(f"Extracted: Views={views}, Followers={followers}")
 
-        # 4. Salva tudo (CSV + DB) - AGORA COM 'followers' DEFINIDO
+        # 4. Processa e Salva (Passando o HTML do SSI)
         df = update_ssi_table(
-            ssi_raw_text,  # Usando o texto SSI salvo no passo 2
+            ssi_html_source,  # HTML AQUI
             CONNECTION_LIMIT,
             FOLLOW_LIMIT,
             PROFILES_TO_SCAN,
@@ -2095,18 +2239,15 @@ def run_extraction_process():
             FEED_COMMENT_PROB,
             SESSION_WITHDRAWN_COUNT,
             total_conns,
-            followers,  # NOVO PARAMETRO - AGORA DEFINIDO
+            followers,
         )
-        print("SSI Updated.")
-        print(df.tail(1))
+        print("SSI Updated successfully.")
 
-        # Coleta dados do Dashboard para o SQLite
         log_analytics_db(views, impressions, search, followers)
-
         driver.quit()
+
     except Exception as e:
-        print(f"SSI Error: {e}")
-        # Se houver erro, tenta fechar o driver
+        print(f"Critical Error in Extraction: {e}")
         try:
             driver.quit()
         except:
