@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import csv
 import datetime
+import gc
 import os
 import random
 import re
@@ -8,6 +9,16 @@ import sqlite3  # ADICIONADO: Para o Dashboard
 import sys
 import time
 from datetime import timedelta
+
+import pandas as pd
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service as EdgeService
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.edge.options import Options as EdgeOptions
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 
 # Corrigir encoding no Windows para suportar emojis
 if sys.platform == "win32":
@@ -39,16 +50,6 @@ except Exception as e:
     print(f"Aviso: Erro na inicialização do g4f. IA desativada. Detalhe: {e}")
     ai_client = None
 
-import pandas as pd
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service as EdgeService
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.edge.options import Options as EdgeOptions
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
-
 # ==============================================================================
 # ⚙️ PAINEL DE CONTROLE INTELIGENTE
 # ==============================================================================
@@ -56,6 +57,11 @@ from selenium.webdriver.support.ui import WebDriverWait
 # 1. MODO DE OPERAÇÃO (PILOTO AUTOMÁTICO)
 AUTO_REGULATE = False
 
+
+BASE_QUICK_CONNECT_URL = "https://www.linkedin.com/search/results/people/?facetNetwork=%5B%22S%22%5D&geoUrn=%5B%22101165590%22%2C%22103350119%22%2C%22102890719%22%2C%22106693272%22%2C%22100364837%22%2C%22105646813%22%2C%22101282230%22%2C%22104738515%22%5D&origin=FACETED_SEARCH"
+# ==============================================================================
+# FUNÇÕES AUXILIARES
+# ==============================================================================
 
 # 2. VELOCIDADE
 SPEED_FACTOR = 4
@@ -69,6 +75,7 @@ AI_PERSONA = "I am a Senior Data Scientist experienced in Python, Databricks, ML
 
 HIGH_VALUE_KEYWORDS = [
     # Data Science & ML
+    "lead",
     "machine learning",
     "deep learning",
     "generative ai",
@@ -77,7 +84,7 @@ HIGH_VALUE_KEYWORDS = [
     "reinforcement learning",
     "data scientist",
     "ml engineer",
-    "ai specialist",
+    "ml engineer",
     # Big Data & Cloud
     "apache spark",
     "databricks",
@@ -134,21 +141,25 @@ TARGET_ROLES = [
 
 # 5. LIMITES MANUAIS (Fallback se AUTO_REGULATE = False)
 LIMITS_CONFIG = {
-    "CONNECTION": (5, 8),
+    "CONNECTION": (10, 18),
     "FOLLOW": (10, 15),
-    "PROFILES_SCAN": (20, 30),
-    "FEED_POSTS": (20, 30),
+    "PROFILES_SCAN": (40, 50),
+    "FEED_POSTS": (40, 50),
 }
-QUICK_CONNECT_LIMIT = 10
 
+
+QUICK_CONNECT_LIMIT = int(
+    random.randint(LIMITS_CONFIG["CONNECTION"][0], LIMITS_CONFIG["CONNECTION"][1])
+)
 
 # 6. PROBABILIDADES MANUAIS (Fallback se AUTO_REGULATE = False)
 PROBS = {
     "FEED_LIKE": (0.20, 0.30),
     "FEED_COMMENT": (0.05, 0.15),
-    "GROUP_LIKE": (0.4, 0.50),
+    "GROUP_LIKE": (0.3, 0.40),
     "GROUP_COMMENT": (0.10, 0.15),
 }
+
 
 # 7. CONFIGURAÇÕES GERAIS
 CONNECT_WITH_USERS = True
@@ -455,11 +466,6 @@ LOGS_DIR = os.path.join(os.path.dirname(__file__), "..", "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
 browser = None
 # Exemplo de como definir a variável global (Adicione no seu painel de controle)
-
-BASE_QUICK_CONNECT_URL = "https://www.linkedin.com/search/results/people/?facetNetwork=%5B%22S%22%5D&geoUrn=%5B%22101165590%22%2C%22103350119%22%2C%22102890719%22%2C%22106693272%22%2C%22100364837%22%2C%22105646813%22%2C%22101282230%22%2C%22104738515%22%5D&origin=FACETED_SEARCH"
-# ==============================================================================
-# FUNÇÕES AUXILIARES
-# ==============================================================================
 
 
 def get_factored_time(seconds):
@@ -1335,95 +1341,86 @@ BASE_SNIPER_URL = "https://www.linkedin.com/search/results/people/?geoUrn=%5B%22
 
 def run_quick_connects(browser):
     """
-    Acessa BASE_QUICK_CONNECT_URL com keywords de TARGET_ROLES e procura por links "Invite...to connect".
-    Clica neles em múltiplas páginas até atingir QUICK_CONNECT_LIMIT.
+    Access BASE_QUICK_CONNECT_URL with TARGET_ROLES keywords and look for connection buttons/links.
+    Clicks them across multiple pages until QUICK_CONNECT_LIMIT is reached.
     """
+
     global SESSION_CONNECTION_COUNT, CONNECTION_LIMIT
+
+    # Settings for this run
+    connect_count = 0
+    page = 1
+    max_pages = 20
 
     print(
         f"\n⚡️ [QUICK CONNECTS] Tentando {QUICK_CONNECT_LIMIT} conexões diretas...",
         flush=True,
     )
 
-    connect_count = 0
-    page = 1
-    max_pages = 20
-
-    # Seleciona um cargo aleatório de TARGET_ROLES para usar como keyword
     keyword = random.choice(TARGET_ROLES)
-    print(f"    🎯 Buscando por: '{keyword}'", flush=True)  # URL com keyword encoded
+    print(f"    🎯 Buscando por: '{keyword}'", flush=True)
     keyword_encoded = keyword.replace(" ", "%20")
     quick_connect_url_with_keyword = (
         f"{BASE_QUICK_CONNECT_URL}&keywords={keyword_encoded}"
     )
 
     while connect_count < QUICK_CONNECT_LIMIT and page <= max_pages:
-        # Constrói URL com paginação
-        if page == 1:
-            url = quick_connect_url_with_keyword
-        else:
-            # Adiciona &page={page}&spellCorrectionEnabled=true ao URL base para páginas 2+
-            url = f"{quick_connect_url_with_keyword}&page={page}&spellCorrectionEnabled=true"
+        url = (
+            quick_connect_url_with_keyword
+            if page == 1
+            else f"{quick_connect_url_with_keyword}&page={page}&spellCorrectionEnabled=true"
+        )
 
         print(f"    -> Página {page}...")
         browser.get(url)
-        human_sleep(10, 15)
+        human_sleep(8, 12)
 
-        # Scroll para carregar resultados
-        for _ in range(3):
+        # Scroll to load all results
+        for _ in range(2):
             browser.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            human_sleep(2, 3)
-
+            human_sleep(1, 2)
         browser.execute_script("window.scrollTo(0, 0);")
-        human_sleep(2, 3)
 
-        # Procura por links "Invite...to connect"
         try:
-            invite_links = browser.find_elements(
-                By.XPATH,
-                "//a[contains(@aria-label, 'Invite') and contains(@aria-label, 'to connect')]",
-            )
+            # Enhanced XPath to find both <a> and <button> containing "Invite...to connect"
+            # This covers the new HTML structure you provided
+            query = "//*[(self::a or self::button) and contains(@aria-label, 'Invite') and contains(@aria-label, 'to connect')]"
+            invite_elements = browser.find_elements(By.XPATH, query)
 
-            if not invite_links:
-                print(
-                    f"    -> Nenhum invite encontrado na página {page}. Próxima página..."
-                )
+            if not invite_elements:
+                print(f"    -> Nenhum botão de conexão encontrado na página {page}.")
                 page += 1
                 continue
 
-            print(f"    -> Encontrados {len(invite_links)} invites")
+            print(f"    -> Encontrados {len(invite_elements)} botões de conexão")
 
-            for idx, link in enumerate(invite_links):
+            for element in invite_elements:
                 if connect_count >= QUICK_CONNECT_LIMIT:
                     break
 
                 name = "Unknown"
-
                 try:
-                    # Extrai nome do aria-label
-                    aria_label = link.get_attribute("aria-label")
-                    if aria_label:
-                        if "Invite " in aria_label:
-                            name = aria_label.split("Invite ")[1].split(" to connect")[
-                                0
-                            ]
+                    aria_label = element.get_attribute("aria-label")
+                    if aria_label and "Invite " in aria_label:
+                        name = aria_label.split("Invite ")[1].split(" to connect")[0]
 
-                    # Scroll até link
+                    # Ensure element is in view
                     browser.execute_script(
-                        "arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});",
-                        link,
+                        "arguments[0].scrollIntoView({block: 'center'});", element
                     )
                     human_sleep(1, 2)
 
-                    # Clica
-                    browser.execute_script("arguments[0].click();", link)
-                    human_sleep(3, 5)
+                    # Click the Connect button
+                    browser.execute_script("arguments[0].click();", element)
+                    print(f"    -> Tentando conectar com: {name}")
+                    human_sleep(3, 4)
 
-                    # Tenta fechar modal
+                    # Handle the "Send without a note" modal
                     modal_closed = False
-
                     try:
-                        btn_no_note = WebDriverWait(browser, 2).until(
+                        wait_modal = WebDriverWait(browser, 4)
+                        # Target the 'Send without a note' button specifically
+                        send_btn = wait_modal.until(
                             EC.element_to_be_clickable(
                                 (
                                     By.XPATH,
@@ -1431,74 +1428,40 @@ def run_quick_connects(browser):
                                 )
                             )
                         )
-                        browser.execute_script("arguments[0].click();", btn_no_note)
+                        browser.execute_script("arguments[0].click();", send_btn)
                         modal_closed = True
-                        human_sleep(3, 5)
+                        print(f"    -> [✓] {name} (Convite enviado)")
                     except Exception:
-                        pass
-
-                    if not modal_closed:
+                        # Check if a direct 'Send' button exists as fallback
                         try:
-                            send_btn = WebDriverWait(browser, 2).until(
-                                EC.element_to_be_clickable(
-                                    (
-                                        By.XPATH,
-                                        "//button[contains(@class, 'artdeco-button--primary') and (.//span[text()='Enviar'] or .//span[text()='Send'])]",
-                                    )
-                                )
+                            direct_send = browser.find_element(
+                                By.XPATH,
+                                "//button[contains(@class, 'artdeco-button--primary') and contains(., 'Send')]",
                             )
-                            browser.execute_script("arguments[0].click();", send_btn)
+                            browser.execute_script("arguments[0].click();", direct_send)
                             modal_closed = True
-                            human_sleep(3, 5)
-                        except Exception:
+                        except:
                             pass
 
-                    if not modal_closed:
-                        try:
-                            close_btn = browser.find_element(
-                                By.XPATH, "//button[@aria-label='Dismiss']"
-                            )
-                            browser.execute_script("arguments[0].click();", close_btn)
-                            human_sleep(1, 2)
-                        except Exception:
-                            pass
-
-                    if not modal_closed:
-                        try:
-                            browser.execute_script(
-                                "document.addEventListener('keydown', function(e) { if(e.key === 'Escape') { e.preventDefault(); } });"
-                            )
-                            browser.execute_script(
-                                "document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));"
-                            )
-                            human_sleep(1, 2)
-                        except Exception:
-                            pass
-
-                    print(f"    -> [✓] {name}")
-                    connect_count += 1
-                    SESSION_CONNECTION_COUNT += 1
-                    human_sleep(4, 7)
+                    if modal_closed:
+                        connect_count += 1
+                        SESSION_CONNECTION_COUNT += 1
+                        human_sleep(4, 6)
+                    else:
+                        # If stuck, try to escape the modal
+                        browser.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+                        print(f"    -> [!] Modal não respondeu para {name}")
 
                 except Exception as e:
-                    print(f"    -> [✗] {name}: {str(e)[:50]}")
-                    try:
-                        browser.find_element(
-                            By.XPATH, "//button[@aria-label='Dismiss']"
-                        ).click()
-                    except Exception:
-                        pass
-                    human_sleep(2, 3)
+                    print(f"    -> [✗] Erro ao processar item: {str(e)[:40]}")
                     continue
 
         except Exception as e:
-            print(f"    -> Erro ao coletar: {str(e)[:50]}")
+            print(f"    -> Erro na coleta da página: {str(e)[:50]}")
 
         page += 1
 
-    print(
-        f"⚡️ [QUICK CONNECTS] Concluído. Total: {connect_count}/{QUICK_CONNECT_LIMIT} | Sessão: {SESSION_CONNECTION_COUNT}/{CONNECTION_LIMIT}"
-    )
+    print(f"⚡️ [QUICK CONNECTS] Concluído: {connect_count} conexões.")
 
 
 # ==============================================================================
@@ -1726,22 +1689,194 @@ def click_connect_sequence(
         ActionChains(browser).move_to_element(button_element).perform()
         human_sleep(1, 2)
         browser.execute_script("arguments[0].click();", button_element)
-        human_sleep(4, 7)  # Mais tempo para o modal carregar
+        print(
+            "    -> [CLICK] Botão Connect clicado. Esperando modal aparecer...",
+            flush=True,
+        )
+
+        # ESPERA EXPLÍCITA: Aguarda o modal aparecer antes de fazer qualquer coisa
+        try:
+            WebDriverWait(browser, 10).until(
+                EC.presence_of_element_located(
+                    (By.XPATH, "//div[@data-test-modal-id='send-invite-modal']")
+                )
+            )
+            print(
+                "    ✅ [MODAL] Modal detectado! Procurando botão 'Send without a note'...",
+                flush=True,
+            )
+        except Exception as modal_wait_error:
+            print(
+                f"    ❌ [MODAL] Timeout esperando modal: {modal_wait_error}",
+                flush=True,
+            )
+            return False
+
     except Exception as e:
-        print(f"    -> [ERROR] Failed to click 'Connect' button (JS/ActionChains): {e}")
+        print(
+            f"    -> [ERROR] Failed to click 'Connect' button (JS/ActionChains): {e}",
+            flush=True,
+        )
         return False  # Falhou na primeira etapa
 
     # 1.5 NOVO: Fecha o modal "Add a note to your invitation?" clicando em "Send without a note"
+    modal_closed_successfully = False
     try:
-        xpath_no_note = "//button[@aria-label='Send without a note' or @aria-label='Enviar sem nota']"
-        btn_no_note = WebDriverWait(browser, 5).until(
-            EC.element_to_be_clickable((By.XPATH, xpath_no_note))
-        )
-        browser.execute_script("arguments[0].click();", btn_no_note)
-        human_sleep(3, 5)  # Aguarda o modal desaparecer
-    except:
+        # Múltiplos seletores para o botão "Send without a note" com diferentes estratégias
+        send_without_note_selectors = [
+            # 1. Seletor por aria-label com contains (case-insensitive)
+            (
+                "XPATH 1 (aria-label)",
+                "//button[contains(@aria-label, 'Send without a note')]",
+            ),
+            # 2. Seletor por aria-label em português
+            ("XPATH 2 (Enviar)", "//button[contains(@aria-label, 'Enviar sem nota')]"),
+            # 3. Buscar span com texto e subir para button
+            (
+                "XPATH 3 (span ancestor)",
+                "//span[contains(text(), 'Send without a note')]/ancestor::button",
+            ),
+            # 4. Buscar button que contém span com o texto
+            (
+                "XPATH 4 (contains span)",
+                "//button[.//span[contains(text(), 'Send without a note')]]",
+            ),
+            # 5. Buscar o último button primário na actionbar (mais comum)
+            (
+                "XPATH 5 (actionbar primary)",
+                "//div[contains(@class, 'artdeco-modal__actionbar')]//button[contains(@class, 'artdeco-button--primary')]",
+            ),
+            # 6. Buscar button primário dentro do modal
+            (
+                "XPATH 6 (modal primary last)",
+                "//div[@data-test-modal-id='send-invite-modal']//button[contains(@class, 'artdeco-button--primary')][last()]",
+            ),
+            # 7. CSS Selector para button na actionbar
+            (
+                "CSS 7 (actionbar)",
+                "div.artdeco-modal__actionbar button.artdeco-button--primary",
+            ),
+            # 8. Buscar qualquer button ml1 que seja primary
+            (
+                "XPATH 8 (ml1 primary)",
+                "//button[contains(@class, 'artdeco-button--primary') and contains(@class, 'ml1')]",
+            ),
+        ]
+
+        btn_no_note = None
+        for selector_type, selector_value in send_without_note_selectors:
+            try:
+                print(f"    -> [DEBUG] Tentando {selector_type}...", flush=True)
+                if selector_type.startswith("CSS"):
+                    btn_no_note = WebDriverWait(browser, 3).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector_value))
+                    )
+                else:  # XPATH
+                    btn_no_note = WebDriverWait(browser, 3).until(
+                        EC.element_to_be_clickable((By.XPATH, selector_value))
+                    )
+                if btn_no_note:
+                    print(
+                        f"    ✅ [ENCONTRADO] Botão com seletor: {selector_type}",
+                        flush=True,
+                    )
+                    break
+            except Exception:
+                print(f"    ❌ [FALHOU] {selector_type}", flush=True)
+                continue
+
+        if btn_no_note:
+            print("    -> [CLICANDO] Executando clique no botão...", flush=True)
+            try:
+                browser.execute_script(
+                    "arguments[0].scrollIntoView(true);", btn_no_note
+                )
+                human_sleep(0.5, 1)
+                browser.execute_script("arguments[0].click();", btn_no_note)
+                print(
+                    "    ✅ [CLICADO] Botão 'Send without a note' foi clicado!",
+                    flush=True,
+                )
+
+                # AGUARDA O MODAL DESAPARECER COMPLETAMENTE
+                print("    -> [AGUARDANDO] Esperando modal fechar...", flush=True)
+                try:
+                    WebDriverWait(browser, 10).until(
+                        EC.invisibility_of_element_located(
+                            (By.XPATH, "//div[@data-test-modal-id='send-invite-modal']")
+                        )
+                    )
+                    print(
+                        "    ✅ [MODAL FECHADO] Modal desapareceu com sucesso!",
+                        flush=True,
+                    )
+                    modal_closed_successfully = True
+                except Exception as modal_close_error:
+                    print(f"    ❌ [MODAL NÃO FECHOU] {modal_close_error}", flush=True)
+                    # Mesmo que o wait falhe, marca como sucesso se o clique foi feito
+                    modal_closed_successfully = True
+            except Exception as click_error:
+                print(f"    ❌ [ERRO AO CLICAR] {click_error}", flush=True)
+        else:
+            # Se nenhum seletor funcionou, tenta JavaScript puro para encontrar e clicar
+            if VERBOSE:
+                print(
+                    "    -> [DEBUG] Nenhum seletor funcionou. Tentando JS puro...",
+                    flush=True,
+                )
+            try:
+                # JavaScript que procura o botão e clica nele
+                js_code = """
+                var buttons = document.querySelectorAll('button');
+                for (var i = 0; i < buttons.length; i++) {
+                    if (buttons[i].getAttribute('aria-label') && 
+                        buttons[i].getAttribute('aria-label').includes('Send without a note')) {
+                        buttons[i].click();
+                        return true;
+                    }
+                    // Também procura por text content
+                    if (buttons[i].textContent && 
+                        buttons[i].textContent.includes('Send without a note') &&
+                        buttons[i].className.includes('artdeco-button--primary')) {
+                        buttons[i].click();
+                        return true;
+                    }
+                }
+                return false;
+                """
+                result = browser.execute_script(js_code)
+                if result:
+                    if VERBOSE:
+                        print("    -> [DEBUG] Botão clicado via JavaScript", flush=True)
+                    human_sleep(3, 5)
+                    modal_closed_successfully = True
+                else:
+                    if VERBOSE:
+                        print(
+                            "    -> [DEBUG] JavaScript não encontrou o botão",
+                            flush=True,
+                        )
+            except Exception as js_error:
+                if VERBOSE:
+                    print(
+                        f"    -> [DEBUG] Erro no JS: {str(js_error)[:50]}", flush=True
+                    )
+                pass
+    except Exception as modal_error:
         # Se não encontrar o botão "Send without a note", continua (talvez o modal já esteja fechado)
+        if VERBOSE:
+            print(
+                f"    -> [DEBUG] Modal 'Send without a note' não encontrado: {str(modal_error)[:50]}",
+                flush=True,
+            )
         pass
+
+    # SE conseguiu clicar em "Send without a note", marca como sucesso e retorna
+    if modal_closed_successfully:
+        CONNECTED = True
+        SESSION_CONNECTION_COUNT += 1
+        print(f"    -> [SUCCESS] Invite Sent (Direct - No Note) to: {name}", flush=True)
+        return True
 
     # 2. Lógica de Envio de Nota vs. Envio Direto
     if SEND_AI_NOTE == 1:
@@ -1784,18 +1919,39 @@ def click_connect_sequence(
             print(f"-> Failed to add note ({e}). Trying 'Send without note'...")
             # Tenta o fallback: enviar sem nota (se o modal de nota estiver aberto)
             try:
-                xpath_no_note = "//button[@aria-label='Enviar sem nota' or @aria-label='Send without a note']"
-                btn_no_note = WebDriverWait(browser, 3).until(
-                    EC.element_to_be_clickable((By.XPATH, xpath_no_note))
-                )
-                browser.execute_script("arguments[0].click();", btn_no_note)
+                # Múltiplos seletores para encontrar "Send without a note"
+                send_without_note_selectors = [
+                    "//button[@aria-label='Send without a note']",
+                    "//button[@aria-label='Enviar sem nota']",
+                    "//button//span[text()='Send without a note']/ancestor::button",
+                    "//button[contains(.//span, 'Send without a note')]",
+                    "//div[@class*='artdeco-modal__actionbar']//button[contains(@class, 'artdeco-button--primary')]",
+                ]
 
-                CONNECTED = True
-                SESSION_CONNECTION_COUNT += 1
-                print(f"-> [SUCCESS] Invite Sent (No Note - Note Failed) to: {name}")
-                return True
-            except:
+                btn_no_note = None
+                for sel in send_without_note_selectors:
+                    try:
+                        btn_no_note = WebDriverWait(browser, 2).until(
+                            EC.element_to_be_clickable((By.XPATH, sel))
+                        )
+                        if btn_no_note:
+                            break
+                    except:
+                        continue
+
+                if btn_no_note:
+                    browser.execute_script("arguments[0].click();", btn_no_note)
+                    CONNECTED = True
+                    SESSION_CONNECTION_COUNT += 1
+                    print(
+                        f"-> [SUCCESS] Invite Sent (No Note - Note Failed) to: {name}"
+                    )
+                    return True
+                else:
+                    raise Exception("Could not find 'Send without a note' button")
+            except Exception as fallback_e:
                 # Se falhou a nota e o fallback, tenta fechar o modal
+                print(f"-> Fallback failed ({fallback_e}). Closing modal...")
                 try:
                     browser.find_element(
                         By.XPATH,
@@ -1874,7 +2030,7 @@ def run_extraction_process():
 
         # 2. Pega SSI
         driver.get("https://www.linkedin.com/sales/ssi")
-        time.sleep(7)
+        # time.sleep(7)
 
         # Salva o texto da página SSI ANTES de mudar de página
         ssi_raw_text = driver.find_element(By.TAG_NAME, "body").text
@@ -1882,7 +2038,7 @@ def run_extraction_process():
         # 3. Coleta dados do Dashboard (Views, Impressions, Searches, Followers)
         print("📊 Coletando Analytics para Dashboard (incluindo Followers)...")
         driver.get("https://www.linkedin.com/dashboard/")
-        time.sleep(5)
+        # time.sleep(5)
 
         # Inicialização das variáveis para garantir que existam para a chamada da função
         views = 0

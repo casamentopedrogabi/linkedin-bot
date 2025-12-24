@@ -79,7 +79,7 @@ fi
 case $opcao in
     1)
         echo -e "${CYAN}🚀 Iniciando Bot v2.0...${NC}"
-        python src/bot_v2.py
+        python -u src/bot_v2.py
         ;;
     2)
         echo -e "${CYAN}📊 Subindo Dashboard Heineken...${NC}"
