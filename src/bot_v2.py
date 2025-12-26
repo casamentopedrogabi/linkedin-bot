@@ -1505,11 +1505,12 @@ def run_quick_connects(browser):
                         name = aria_label.split("Invite ")[1].split(" to connect")[0]
 
                     # Ensure element is in view
+
                     browser.execute_script(
                         "arguments[0].scrollIntoView({block: 'center'});", element
                     )
                     human_sleep(1, 2)
-
+                    natural_mouse_move(browser, element)
                     # Click the Connect button
                     browser.execute_script("arguments[0].click();", element)
                     print(f"    -> Tentando conectar com: {name}")
@@ -1528,6 +1529,8 @@ def run_quick_connects(browser):
                                 )
                             )
                         )
+                        natural_mouse_move(browser, send_btn)
+
                         browser.execute_script("arguments[0].click();", send_btn)
                         modal_closed = True
                         print(f"    -> [✓] {name} (Convite enviado)")
@@ -3143,7 +3146,7 @@ if __name__ == "__main__":
             print(
                 f"Agendado para: {(now + timedelta(seconds=wait)).strftime('%H:%M:%S')}"
             )
-            time.sleep(wait * 0)
+            time.sleep(wait )
             run_extraction_process()
             if random.randint(0, 7) != 0:
                 launch()
