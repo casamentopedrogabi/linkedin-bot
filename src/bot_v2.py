@@ -3146,7 +3146,7 @@ if __name__ == "__main__":
             print(
                 f"Agendado para: {(now + timedelta(seconds=wait)).strftime('%H:%M:%S')}"
             )
-            time.sleep(wait )
+            time.sleep(wait * 0)
             run_extraction_process()
             if random.randint(0, 7) != 0:
                 launch()
