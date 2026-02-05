@@ -15,6 +15,7 @@ from datetime import timedelta
 import pandas as pd
 from bs4 import BeautifulSoup
 from selenium import webdriver
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.chrome.service import Service as EdgeService
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
@@ -180,6 +181,18 @@ SAVECSV = True
 VERBOSE = True
 # NOVO: Variável para controlar o envio de notas. (1 = Enviar Nota, 0 = Enviar Direto)
 SEND_AI_NOTE = 0
+
+# ==============================================================================
+# 8. FILTROS SSI-SAFE (Conectar APENAS com pessoas que CRESCEM seu SSI)
+# ==============================================================================
+MIN_CONNECTIONS = 300  # Mínimo de conexões pra ser confiável
+MIN_FOLLOWERS = 500  # Influenciadores aumentam seu SSI
+MAX_POSTING_DAYS_AGO = 30  # Só pessoas ativas (postaram nos últimos 30 dias)
+MIN_RECOMMENDATIONS = 2  # Credibilidade mínima
+MIN_SKILLS = 3  # Perfil preenchido
+PROFILE_COMPLETION_MIN = 75  # % de completude do perfil
+REQUIRE_CERTIFICATIONS = False  # Priorizar certifications
+SSI_SAFE_MODE = True  # Ativa todos os filtros acima
 
 # LISTA COMPLETA DE GRUPOS (ANTIGOS + NOVOS)
 LINKEDIN_GROUPS_LIST = [
@@ -472,6 +485,14 @@ SESSION_GROUP_LIKES = 0
 TEMP_NAME = ""
 TEMP_HEADLINE = ""
 CURRENT_GROUP_NAME = "our shared group"
+
+# ==============================================================================
+# LIMITES INDEPENDENTES POR BLOCO (SNIPER vs GRUPO)
+# ==============================================================================
+SNIPER_CONNECTION_LIMIT = CONNECTION_LIMIT  # Sniper tem seu próprio limite
+SNIPER_CONNECTION_COUNT = 0  # Contador separado para Sniper
+GROUP_CONNECTION_LIMIT = CONNECTION_LIMIT  # Grupo tem seu próprio limite
+GROUP_CONNECTION_COUNT = 0  # Contador separado para Grupo
 CONNECTED = False
 TIME = str(datetime.datetime.now().time())
 COMMENTED_POSTS_FILE = os.path.join(DATA_DIR, "commentedPosts.txt")
@@ -1008,7 +1029,11 @@ def run_main_bot_logic(browser, sniper_targets=None):
     Combina coleta de perfis do grupo com alvos Sniper e varre a lista completa
     aplicando comportamento humano avançado (SSI Boost).
     """
-    global SESSION_CONNECTION_COUNT, SESSION_FOLLOW_COUNT, CONNECTED
+    global \
+        SNIPER_CONNECTION_COUNT, \
+        SESSION_FOLLOW_COUNT, \
+        CONNECTED, \
+        SESSION_CONNECTION_COUNT
     # Globais de estatísticas da sessão
     global SESSION_GROUP_LIKES, SESSION_GROUP_COMMENTS
 
@@ -1214,13 +1239,16 @@ def run_main_bot_logic(browser, sniper_targets=None):
             # [TEMPERO 3] Endosso Estratégico (Só skills do nicho)
             strategic_endorse_skills(browser)
 
-            # Lógica de Conexão
-            if SESSION_CONNECTION_COUNT < CONNECTION_LIMIT:
+            # Lógica de Conexão (Sniper tem seu próprio limite)
+            if SNIPER_CONNECTION_COUNT < SNIPER_CONNECTION_LIMIT:
                 if any(role in headline for role in TARGET_ROLES):
                     print("    -> [ALVO] Tentando conectar...")
                     if connect_with_user(browser, name, headline, group_name):
                         status = "Connected"
-                        SESSION_CONNECTION_COUNT += 1
+                        SNIPER_CONNECTION_COUNT += 1
+                        SESSION_CONNECTION_COUNT += (
+                            1  # Mantém total de sessão para logging
+                        )
                         sleep_after_connection()
 
             # Lógica de Follow (SSI Boost para Top Profiles)
@@ -1264,7 +1292,9 @@ def run_main_bot_logic(browser, sniper_targets=None):
             continue
 
     print("\n--- VARREDURA FINALIZADA ---")
-    print(f"Total Connected na Sessão: {SESSION_CONNECTION_COUNT}/{CONNECTION_LIMIT}")
+    print(
+        f"Total Connected (Sniper): {SNIPER_CONNECTION_COUNT}/{SNIPER_CONNECTION_LIMIT}"
+    )
     print(f"Total Followed na Sessão: {SESSION_FOLLOW_COUNT}/{FOLLOW_LIMIT}")
 
 
@@ -1450,7 +1480,8 @@ def run_quick_connects(browser):
     # Settings for this run
     connect_count = 0
     page = 1
-    max_pages = 20
+    max_pages = 5  # REDUZIDO de 20 para 5 páginas máximo
+    consecutive_empty_pages = 0
 
     print(
         f"\n⚡️ [QUICK CONNECTS] Tentando {QUICK_CONNECT_LIMIT} conexões diretas...",
@@ -1472,8 +1503,13 @@ def run_quick_connects(browser):
         )
 
         print(f"    -> Página {page}...")
-        browser.get(url)
-        human_sleep(8, 12)
+        try:
+            browser.get(url)
+            human_sleep(5, 8)
+        except Exception as e:
+            print(f"    -> Erro ao carregar página {page}: {e}")
+            page += 1  # ✅ Continua para a próxima página, não quebra tudo
+            continue  # ✅ Pula para a próxima iteração do while
 
         # Scroll to load all results
         for _ in range(2):
@@ -1482,82 +1518,118 @@ def run_quick_connects(browser):
         browser.execute_script("window.scrollTo(0, 0);")
 
         try:
-            # Enhanced XPath to find both <a> and <button> containing "Invite...to connect"
-            # This covers the new HTML structure you provided
-            query = "//*[(self::a or self::button) and contains(@aria-label, 'Invite') and contains(@aria-label, 'to connect')]"
-            invite_elements = browser.find_elements(By.XPATH, query)
+            # Extrai todos os links de perfil usando BeautifulSoup (mais robusto)
+            soup = BeautifulSoup(browser.page_source, "html.parser")
+            all_links = soup.find_all("a", href=True)
 
-            if not invite_elements:
-                print(f"    -> Nenhum botão de conexão encontrado na página {page}.")
+            profile_links = []
+            visited_file = os.path.join(DATA_DIR, "visitedUsers.txt")
+            visited = set()
+            if os.path.exists(visited_file):
+                with open(visited_file, "r") as vf:
+                    visited = set(l.strip() for l in vf if l.strip())
+
+            for link in all_links:
+                if len(profile_links) >= (QUICK_CONNECT_LIMIT - connect_count):
+                    break
+
+                href = link.get("href", "")
+
+                # Filtra apenas links de perfil LinkedIn (/in/)
+                if "/in/" not in href:
+                    continue
+
+                # Remove query params
+                clean_href = href.split("?")[0]
+
+                # Ignora links relativos ou inválidos
+                if not clean_href.startswith("http"):
+                    if clean_href.startswith("/in/"):
+                        clean_href = "https://www.linkedin.com" + clean_href
+                    else:
+                        continue
+
+                # Filtra lixo (ACo, ACw)
+                if "/preload/" in clean_href or "/custom-invite/" in clean_href:
+                    continue
+
+                # Evita duplicatas e visitados
+                if clean_href not in profile_links and clean_href not in visited:
+                    profile_links.append(clean_href)
+
+            if not profile_links:
+                print(f"    -> Nenhum perfil extraído na página {page}.")
+                consecutive_empty_pages += 1
+                if consecutive_empty_pages >= 2:  # REDUZIDO de 3 para 2
+                    print("    -> Muitas páginas vazias. Interrompendo quick connects.")
+                    break
                 page += 1
                 continue
 
-            print(f"    -> Encontrados {len(invite_elements)} botões de conexão")
+            # reset consecutive empty page counter when we have results
+            consecutive_empty_pages = 0
 
-            for element in invite_elements:
-                if connect_count >= QUICK_CONNECT_LIMIT:
+            print(
+                f"    -> Extraídos {len(profile_links)} perfis para visita na página {page}."
+            )
+
+            # Visita cada perfil e tenta conectar usando a rotina robusta
+            visited_count_on_page = 0
+            for link in profile_links:
+                if (
+                    connect_count >= QUICK_CONNECT_LIMIT
+                    or SESSION_CONNECTION_COUNT >= CONNECTION_LIMIT
+                ):
+                    print(
+                        f"    -> Limite de conexões atingido ({connect_count}/{QUICK_CONNECT_LIMIT}). Parando."
+                    )
                     break
 
-                name = "Unknown"
                 try:
-                    aria_label = element.get_attribute("aria-label")
-                    if aria_label and "Invite " in aria_label:
-                        name = aria_label.split("Invite ")[1].split(" to connect")[0]
+                    print(f"    -> Visitando perfil: {link}")
+                    browser.get(link)
+                    human_sleep(6, 10)
 
-                    # Ensure element is in view
-
-                    browser.execute_script(
-                        "arguments[0].scrollIntoView({block: 'center'});", element
-                    )
-                    human_sleep(1, 2)
-                    natural_mouse_move(browser, element)
-                    # Click the Connect button
-                    browser.execute_script("arguments[0].click();", element)
-                    print(f"    -> Tentando conectar com: {name}")
-                    human_sleep(3, 4)
-
-                    # Handle the "Send without a note" modal
-                    modal_closed = False
+                    # Extrai nome e headline (quando possível)
+                    pname = "Unknown"
+                    pheadline = ""
                     try:
-                        wait_modal = WebDriverWait(browser, 4)
-                        # Target the 'Send without a note' button specifically
-                        send_btn = wait_modal.until(
-                            EC.element_to_be_clickable(
-                                (
-                                    By.XPATH,
-                                    "//button[@aria-label='Send without a note' or @aria-label='Enviar sem nota']",
-                                )
-                            )
-                        )
-                        natural_mouse_move(browser, send_btn)
+                        pname = browser.title.split("|")[0].strip()
+                    except:
+                        pass
+                    try:
+                        pheadline = browser.find_element(
+                            By.XPATH, "//div[contains(@class, 'text-body-medium')]"
+                        ).text.lower()
+                    except:
+                        pass
 
-                        browser.execute_script("arguments[0].click();", send_btn)
-                        modal_closed = True
-                        print(f"    -> [✓] {name} (Convite enviado)")
-                    except Exception:
-                        # Check if a direct 'Send' button exists as fallback
-                        try:
-                            direct_send = browser.find_element(
-                                By.XPATH,
-                                "//button[contains(@class, 'artdeco-button--primary') and contains(., 'Send')]",
-                            )
-                            browser.execute_script("arguments[0].click();", direct_send)
-                            modal_closed = True
-                        except:
-                            pass
-
-                    if modal_closed:
+                    if connect_with_user(browser, pname, pheadline, keyword):
                         connect_count += 1
-                        SESSION_CONNECTION_COUNT += 1
+                        visited_count_on_page += 1
                         human_sleep(4, 6)
+                        print(f"    -> [✓] Convite enviado para: {pname}")
                     else:
-                        # If stuck, try to escape the modal
-                        browser.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-                        print(f"    -> [!] Modal não respondeu para {name}")
+                        print(f"    -> [✗] Não conseguiu enviar convite para: {pname}")
+                        visited_count_on_page += 1
+
+                    # marca como visitado imediatamente para evitar reaparecer em outras páginas
+                    try:
+                        if link not in visited:
+                            with open(visited_file, "a", encoding="utf-8") as vf:
+                                vf.write(link + "\n")
+                            visited.add(link)
+                    except Exception:
+                        pass
 
                 except Exception as e:
-                    print(f"    -> [✗] Erro ao processar item: {str(e)[:40]}")
+                    print(f"    -> Erro ao visitar perfil {link}: {str(e)[:50]}")
                     continue
+
+            if VERBOSE:
+                print(
+                    f"    -> Visitados {visited_count_on_page}/{len(profile_links)} perfis na página {page}."
+                )
 
         except Exception as e:
             print(f"    -> Erro na coleta da página: {str(e)[:50]}")
@@ -1753,7 +1825,12 @@ def generate_smart_fallback(name, group_name):
 
 def connect_with_user(browser, name, headline, group_name):
     """
-    Tenta a conexão primária e o fallback mais robusto para o menu 'Mais'.
+    Tenta a conexão com SSI-SAFE mode ativado.
+    Filtra APENAS perfis que garantem crescimento de SSI:
+    - Mínimo 300 conexões + 500 seguidores
+    - Ativo (postou nos últimos 30 dias)
+    - 2+ recomendações + 3+ skills
+    - Headline com roles de alto nível
     """
     global SESSION_CONNECTION_COUNT
     if SESSION_CONNECTION_COUNT >= CONNECTION_LIMIT:
@@ -1762,48 +1839,470 @@ def connect_with_user(browser, name, headline, group_name):
         )
         return False
 
+    # FILTRO 1: Conexões Mínimas (EXTRAÇÃO ROBUSTA COM BeautifulSoup)
     try:
-        # Tenta 1: Botão primário de 'Conectar' (mais comum)
-        xpath_primary = "//button[.//span[contains(text(), 'Conectar') or contains(text(), 'Connect')]]"
-        btn = browser.find_element(By.XPATH, xpath_primary)
+        page_source = browser.page_source
+        soup = BeautifulSoup(page_source, "html.parser")
 
-        return click_connect_sequence(
-            browser, btn, name, headline, group_name, is_viewer=False
-        )
+        # Procura especificamente pelo <li> que contém "connections" (não "followers")
+        conn_count = None
+        
+        # Busca todos os <li> da seção de stats
+        all_lis = soup.find_all("li", class_="text-body-small")
+        
+        for li in all_lis:
+            li_text = li.get_text().lower()
+            # Verifica se este li contém a palavra "connections"
+            if "connections" in li_text:
+                # Extrai o número (pode ser "500+", "45", etc)
+                numbers = re.findall(r"(\d+)", li.get_text())
+                if numbers:
+                    conn_count = int(numbers[0])
+                    break  # Encontrou, sai do loop
+
+        if not conn_count:
+            # Fallback 2: Procura por "connections" em <li> que tem link
+            li_with_link = soup.find("li", class_="text-body-small")
+            if li_with_link:
+                # Procura o próximo <li> (pode estar em um <a> dentro)
+                parent_ul = li_with_link.find_parent("ul")
+                if parent_ul:
+                    all_items = parent_ul.find_all("li")
+                    for item in all_items:
+                        if "connections" in item.get_text().lower():
+                            numbers = re.findall(r"(\d+)", item.get_text())
+                            if numbers:
+                                conn_count = int(numbers[0])
+                                break
+
+        if not conn_count:
+            # Fallback 3: Tenta no body_text
+            body_text = browser.find_element(By.TAG_NAME, "body").text
+            # Procura DEPOIS da palavra "connection" (pega a ÚLTIMA ocorrência)
+            matches = list(re.finditer(r"(\d+)\s+connections?", body_text))
+            if matches:
+                conn_count = int(matches[-1].group(1))  # Pega o ÚLTIMO match
+
+        if not conn_count:
+            print(
+                "    -> [FILTER 1] Não consegui extrair contagem de conexões. Pulando..."
+            )
+            return False
+
+        if conn_count < MIN_CONNECTIONS:
+            print(
+                f"    -> [FILTER 1] {name} tem apenas {conn_count} conexões (min: {MIN_CONNECTIONS}). Pulando..."
+            )
+            return False
+
+        # FILTRO 2: Seguidores Mínimos (SSI-SAFE: Influenciadores > SSI crescimento)
+        if SSI_SAFE_MODE:
+            followers_count = None
+            # Procura por "followers" na página HTML
+            followers_match = re.search(
+                r"([\d,]+)\s*followers?", page_source, re.IGNORECASE
+            )
+            if followers_match:
+                followers_count = int(followers_match.group(1).replace(",", ""))
+
+            if not followers_count:
+                print(
+                    "    -> [FILTER 2] Não consegui extrair contagem de seguidores. Pulando..."
+                )
+                return False
+
+            if followers_count < MIN_FOLLOWERS:
+                print(
+                    f"    -> [FILTER 2] {name} tem apenas {followers_count} seguidores (min: {MIN_FOLLOWERS}). Pulando..."
+                )
+                return False
+
+            # FILTRO 3: Atividade dentro de 1 ano (Qualquer atividade recente é OK)
+            # Aceita: 1d, 2w, 3m, "Posted X ago", "recently", etc
+            # Rejeita: "1+ year ago", "years ago" (muito antigo)
+            activity_patterns = [
+                r"posted\s+(\d+)\s+days? ago",  # Posted 5 days ago
+                r"posted\s+this\s+week",
+                r"posted\s+today",
+                r"posted\s+\d+\s+hours? ago",
+                r"posted\s+\d+\s+minutes? ago",
+                r"\d+[dwm]\b",  # 1d, 2w, 3m, etc (day, week, month)
+                r"posted\s+\d+[dwm]",  # "posted 1w", "posted 3d"
+                r"\d+\s+days? ago",  # "5 days ago"
+                r"\d+\s+weeks? ago",  # "2 weeks ago"
+                r"\d+\s+months? ago",  # "1 month ago"
+                r"posted\s+last\s+week",  # "posted last week"
+                r"posted\s+recently",  # "posted recently"
+            ]
+
+            # Rejeita APENAS se ver "years ago" ou "1+ year"
+            reject_patterns = [
+                r"\d+\s+years? ago",  # "2 years ago", "3 years ago"
+                r"posted\s+\d+\s+years? ago",  # "posted 2 years ago"
+            ]
+
+            has_recent_activity = False
+            for pattern in activity_patterns:
+                if re.search(pattern, page_source, re.IGNORECASE):
+                    has_recent_activity = True
+                    break
+
+            # Verifica se é muito antigo
+            is_too_old = False
+            for pattern in reject_patterns:
+                if re.search(pattern, page_source, re.IGNORECASE):
+                    is_too_old = True
+                    break
+
+            if is_too_old:
+                print(f"    -> [FILTER 3] {name} postou há MAIS de 1 ano. Pulando...")
+                return False
+
+            if not has_recent_activity:
+                # Se não encontrou padrão explícito, mas também não é muito antigo, aceita mesmo assim
+                # (pode ter postado recentemente mas o texto não é claro)
+                if VERBOSE:
+                    print(
+                        f"    -> [FILTER 3] {name} - atividade indefinida, aceitando..."
+                    )
+
+        # FILTRO 4: Verifica se já está conectado (múltiplas formas de detecção)
+        body_text = browser.find_element(By.TAG_NAME, "body").text
+        body_lower = body_text.lower()
+        already_connected_indicators = [
+            "already connected",
+            "remove your connection",
+            "remove connection",
+            "you're connected",
+            "você está conectado",
+            "remover conexão",
+        ]
+
+        for indicator in already_connected_indicators:
+            if indicator in body_lower:
+                print(f"    -> [ALREADY] {name} já está conectado. Pulando...")
+                return False
+
+        # FILTRO 5: Verifica se existe botão "Remove connection" ou similar no DOM
+        # Isso é um sinal de que já estão conectados
+        try:
+            remove_buttons = browser.find_elements(
+                By.XPATH,
+                "//button[contains(@aria-label, 'Remove') and contains(@aria-label, 'connection')] | //div[@aria-label and contains(@aria-label, 'Remove') and contains(@aria-label, 'connection')]",
+            )
+            if remove_buttons and len(remove_buttons) > 0:
+                print(
+                    f"    -> [ALREADY DOM] {name} tem botão 'Remove connection'. Pulando..."
+                )
+                return False
+        except:
+            pass
+
+        # FILTRO 6: Se vê botão "Message" MAS NÃO vê "Connect", significa que já é amigo
+        # No LinkedIn, quando você já está conectado com alguém, só aparece "Message", não "Connect"
+        try:
+            message_buttons = browser.find_elements(
+                By.XPATH,
+                "//button[contains(@aria-label, 'Message')] | //a[contains(@aria-label, 'Message')] | //*[@aria-label and contains(@aria-label, 'Message')]",
+            )
+
+            connect_buttons = browser.find_elements(
+                By.XPATH,
+                "//button[contains(@aria-label, 'Connect') or contains(@aria-label, 'Invite')] | //a[contains(@aria-label, 'Connect') or contains(@aria-label, 'Invite')] | //*[@aria-label and (contains(@aria-label, 'Connect') or contains(@aria-label, 'Invite'))]",
+            )
+
+            # Se tem Message mas NÃO tem Connect/Invite = já é amigo
+            if (
+                message_buttons
+                and len(message_buttons) > 0
+                and (not connect_buttons or len(connect_buttons) == 0)
+            ):
+                print(
+                    f"    -> [MESSAGE ONLY] {name} tem botão 'Message' apenas - já é sua conexão. Pulando..."
+                )
+                return False
+        except:
+            pass
+
+    except:
+        pass
+
+    try:
+        # ESPERA: Garante que o DOM carregou
+        human_sleep(3, 5)
+
+        # SCROLL AGRESSIVO para garantir que o bloco principal está visível
+        for _ in range(3):
+            browser.execute_script(
+                "window.scrollTo(0, document.body.scrollHeight * 0.2);"
+            )
+            human_sleep(0.5, 1)
+        human_sleep(1, 2)
+
+        # ===== CRÍTICO: PROCURAR APENAS NO BLOCO PRINCIPAL (div.ph5.pb5) =====
+        # NÃO procurar em <aside> ou outras seções com sugestões
+        # A sidebar (<aside>) contém "More profiles for you", "People you may know" etc
+        # com botões Connect que NUNCA devemos clicar
+
+        profile_card = None
+        try:
+            # Procura pelo bloco PRINCIPAL do perfil (class estável)
+            # Este é o ÚNICO local onde queremos clicar em Connect
+            profile_card = WebDriverWait(browser, 3).until(
+                EC.presence_of_element_located(
+                    (
+                        By.XPATH,
+                        "//div[contains(@class, 'ph5') and contains(@class, 'pb5')]",
+                    )
+                )
+            )
+            if VERBOSE:
+                print("    -> [BLOCO] Perfil principal encontrado (IGNORANDO sidebar)")
+        except:
+            profile_card = None
+
+        # Se encontrou o bloco PRINCIPAL, procurar botão Connect APENAS DENTRO DELE
+        if profile_card:
+            # Tenta botão Connect direto (sem menu)
+            try:
+                # XPath restrito ao contexto do elemento encontrado (perfil principal)
+                # find_element dentro de profile_card só busca dentro dele
+                connect_btn = profile_card.find_element(
+                    By.XPATH,
+                    ".//button[(contains(@aria-label, 'Connect') or contains(@aria-label, 'Invite')) and not(ancestor::aside)]",
+                )
+                if connect_btn and connect_btn.is_displayed():
+                    if VERBOSE:
+                        print(
+                            "    -> [BOTÃO DIRETO] Encontrado NO BLOCO PRINCIPAL, tentando clicar..."
+                        )
+                    result = click_connect_sequence(
+                        browser,
+                        connect_btn,
+                        name,
+                        headline,
+                        group_name,
+                        is_viewer=False,
+                    )
+                    if result:
+                        return True
+            except:
+                pass
+
+            # Se Connect direto não está visível, procura no dropdown "More actions"
+            try:
+                more_btn = profile_card.find_element(
+                    By.XPATH,
+                    ".//button[contains(@aria-label, 'More actions') and not(ancestor::aside)]",
+                )
+                if more_btn and more_btn.is_displayed():
+                    if VERBOSE:
+                        print(
+                            "    -> [MORE ACTIONS] Encontrado no BLOCO PRINCIPAL, abrindo dropdown..."
+                        )
+
+                    # Clica no More actions
+                    ActionChains(browser).move_to_element(more_btn).perform()
+                    human_sleep(0.5, 1)
+                    browser.execute_script("arguments[0].click();", more_btn)
+                    human_sleep(2, 4)
+
+                    # Aguarda dropdown visível e DENTRO DO BLOCO PRINCIPAL
+                    try:
+                        dropdown_visible = WebDriverWait(browser, 3).until(
+                            EC.presence_of_element_located(
+                                (
+                                    By.XPATH,
+                                    "//div[contains(@class,'artdeco-dropdown__content') and (not(@aria-hidden) or @aria-hidden='false') and not(ancestor::aside)]",
+                                )
+                            )
+                        )
+                        human_sleep(0.5, 1)
+
+                        # Procura "Connect" dentro do dropdown aberto (restrito ao bloco principal)
+
+                        connect_items = dropdown_visible.find_elements(
+                            By.XPATH,
+                            ".//div[contains(@aria-label, 'Connect') and not(ancestor::aside)]",
+                        )
+                        for item in connect_items:
+                            if item.is_displayed():
+                                if VERBOSE:
+                                    print(
+                                        "    -> [DROPDOWN CONNECT] Encontrado no BLOCO PRINCIPAL, tentando clicar..."
+                                    )
+                                result = click_connect_sequence(
+                                    browser,
+                                    item,
+                                    name,
+                                    headline,
+                                    group_name,
+                                    is_viewer=False,
+                                )
+                                if result:
+                                    return True
+                    except:
+                        pass
+            except:
+                pass
+
+        # Se a tentativa baseada no bloco do nome não encontrou nada, manter as estratégias existentes
+        # ===== TENTATIVA 1b: Botão "Connect" direto visível (APENAS DO PERFIL PRINCIPAL) =====
+        direct_connect_selectors = [
+            "//div[contains(@class, 'pv-profile-sticky-header') or contains(@class, 'pvs-sticky-header-profile-actions')]//button[contains(@aria-label, 'Invite') and contains(@aria-label, 'to connect') and not(ancestor::aside)]",
+            "(//button[contains(@aria-label, 'Invite') and contains(@aria-label, 'to connect') and not(ancestor::aside)])[1]",
+            "(//button[contains(@class, 'artdeco-button--primary') and contains(@aria-label, 'Invite') and not(ancestor::aside)])[1]",
+            "(//button[.//span[text()='Connect'] and not(ancestor::aside)])[1]",
+        ]
+
+        for xpath_direct in direct_connect_selectors:
+            try:
+                btn = WebDriverWait(browser, 3).until(
+                    EC.element_to_be_clickable((By.XPATH, xpath_direct))
+                )
+                if VERBOSE:
+                    print(
+                        "    -> [BOTÃO DIRETO FALLBACK] Tentando clicar (bloqueando sidebar)..."
+                    )
+
+                result = click_connect_sequence(
+                    browser, btn, name, headline, group_name, is_viewer=False
+                )
+                if result:
+                    return True
+                # Se falhou, tenta o menu como fallback
+                break
+            except:
+                continue
+
+        # ===== TENTATIVA 2: "Connect" dentro do menu 'More actions' (FALLBACK) =====
+        print("    -> [FALLBACK] Tentando menu 'More actions' (bloqueando sidebar)...")
+        more_action_selectors = [
+            # Primeiro: procura por ID que contém "profile-overflow-action" (mais confiável)
+            "//button[contains(@id, 'profile-overflow-action') and not(ancestor::aside)]",
+            # Segundo: qualquer "More actions" que seja próximo ao perfil (não em contatos secundários)
+            "(//button[contains(@aria-label, 'More actions') and not(ancestor::aside)])[1]",
+        ]
+
+        for xpath_more in more_action_selectors:
+            try:
+                btn_more = WebDriverWait(browser, 5).until(
+                    EC.presence_of_element_located((By.XPATH, xpath_more))
+                )
+
+                # Scroll para garantir visibilidade
+                browser.execute_script("arguments[0].scrollIntoView(true);", btn_more)
+                human_sleep(1, 2)
+
+                # Clica com JS (mais confiável)
+                browser.execute_script("arguments[0].click();", btn_more)
+                print("    -> [DROPDOWN OPENING] Aguardando dropdown abrir...")
+                human_sleep(2, 4)
+
+                # Procura "Connect" no dropdown com múltiplas estratégias
+                # O dropdown contém divs/buttons. Procurar especificamente por "Invite to connect"
+                # Evitar falsos positivos como "Remove your connection"
+                dropdown_selectors = [
+                    # Strategy 1: Procura especificamente por "Invite" na aria-label
+                    "//div[@role='button' and contains(@aria-label, 'Invite') and contains(@aria-label, 'to connect')]",
+                    # Strategy 2: Procura por "Invite" sem "Remove"
+                    "//div[@role='button' and contains(@aria-label, 'Invite') and not(contains(@aria-label, 'Remove'))]",
+                    # Strategy 3: Procura por span com "Connect" + role button
+                    "//span[text()='Connect']/ancestor::div[@role='button']",
+                    # Strategy 4: Último recurso - "Invite" em qualquer lugar
+                    "//*[@role='button' and contains(@aria-label, 'Invite to')]",
+                ]
+
+                connect_found = False
+                for i, xpath_drop in enumerate(dropdown_selectors):
+                    try:
+                        # Usa presence em vez de visibility porque aria-hidden não impede clique
+                        btn_drop = WebDriverWait(browser, 2).until(
+                            EC.presence_of_element_located((By.XPATH, xpath_drop))
+                        )
+
+                        aria_label = (
+                            btn_drop.get_attribute("aria-label") or btn_drop.text[:60]
+                        )
+                        if VERBOSE:
+                            print(f"    -> [DROPDOWN FOUND #{i + 1}] {aria_label}")
+
+                        result = click_connect_sequence(
+                            browser,
+                            btn_drop,
+                            name,
+                            headline,
+                            group_name,
+                            is_viewer=False,
+                        )
+                        if result:
+                            return True
+                        connect_found = True
+                        break
+                    except TimeoutException:
+                        if VERBOSE:
+                            print(f"    -> [DROPDOWN TIMEOUT #{i + 1}]")
+                        continue
+                    except Exception as e:
+                        if VERBOSE:
+                            print(
+                                f"    -> [DROPDOWN ERROR #{i + 1}] {type(e).__name__}"
+                            )
+                        continue
+
+                # Se o dropdown abriu mas não tem connect, fecha e tenta próximo seletor
+                if not connect_found:
+                    try:
+                        browser.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+                    except:
+                        pass
+                continue
+
+            except TimeoutException:
+                if VERBOSE:
+                    print(
+                        f"    -> [MORE TIMEOUT] Botão 'More actions' não encontrado: {xpath_more[:50]}"
+                    )
+                continue
+            except Exception as e:
+                if VERBOSE:
+                    print(
+                        f"    -> [MORE ERROR] Erro ao tentar More actions: {str(e)[:60]}"
+                    )
+                continue
+
+        # VERIFICAÇÃO FINAL: Se chegou aqui, nada funcionou. Checar se é porque já é amigo
+        try:
+            body_final = browser.find_element(By.TAG_NAME, "body").text.lower()
+            already_connected_keywords = [
+                "already connected",
+                "remove your connection",
+                "remove connection",
+                "you're connected",
+                "connected with",
+            ]
+
+            is_already_connected = any(
+                keyword in body_final for keyword in already_connected_keywords
+            )
+
+            if is_already_connected:
+                print(f"    -> [JÁ AMIGO] {name} já é seu conexão. Pulando...")
+                return False
+
+        except:
+            pass
+
+        # Se nada funcionou
+        print(f"    -> [SKIP] Não conseguiu conectar com {name}")
+        return False
 
     except Exception as e:
         if "invalid session id" in str(e).lower():
-            raise  # Erro crítico não-recuperável
-
-        # Tentativa 2: Procura no menu 'Mais' (More actions)
-        try:
-            xpath_more = "//button[contains(@aria-label, 'More actions') or .//span[text()='Mais'] or .//span[text()='More']]"
-
-            # Tenta clicar no botão 'Mais ações'
-            btn_more = WebDriverWait(browser, 5).until(
-                EC.element_to_be_clickable((By.XPATH, xpath_more))
-            )
-
-            # Usa JS click para garantir que o dropdown abra, evitando interceptação
-            browser.execute_script("arguments[0].click();", btn_more)
-            human_sleep(2, 4)
-
-            # Procura o botão 'Conectar' DENTRO do dropdown
-            xpath_drop = "//div[contains(@class, 'dropdown')]//span[contains(text(), 'Conectar') or contains(text(), 'Connect')]"
-            btn_drop = WebDriverWait(browser, 5).until(
-                EC.element_to_be_clickable((By.XPATH, xpath_drop))
-            )
-
-            return click_connect_sequence(
-                browser, btn_drop, name, headline, group_name, is_viewer=False
-            )
-
-        except Exception as more_e:
-            # Se falhou o primário e o menu 'Mais'
-            print(
-                f"    -> [SKIP] Não encontrou botão 'Conectar' (Primário ou Menu 'Mais'). Detalhe do erro: {more_e}"
-            )
-            return False
+            raise
+        if VERBOSE:
+            print(f"    -> [ERRO] Falha em connect_with_user: {e}")
+        return False
 
 
 def click_connect_sequence(
@@ -1818,325 +2317,80 @@ def click_connect_sequence(
     if SESSION_CONNECTION_COUNT >= CONNECTION_LIMIT:
         return False
 
-    # 1. Clica no botão 'Conectar' usando JS para evitar interceptação
     try:
+        # 1. Clica no botão 'Conectar'
         ActionChains(browser).move_to_element(button_element).perform()
         human_sleep(1, 2)
         browser.execute_script("arguments[0].click();", button_element)
-        print(
-            "    -> [CLICK] Botão Connect clicado. Esperando modal aparecer...",
-            flush=True,
-        )
+        print("    -> [CLICK] Botão Connect clicado. Aguardando modal...", flush=True)
 
-        # ESPERA EXPLÍCITA: Aguarda o modal aparecer antes de fazer qualquer coisa
+        human_sleep(3, 5)
+
+        # 2. Aguarda modal aparecer com timeout generoso
         try:
-            WebDriverWait(browser, 10).until(
+            WebDriverWait(browser, 5).until(
                 EC.presence_of_element_located(
-                    (By.XPATH, "//div[@data-test-modal-id='send-invite-modal']")
+                    (By.XPATH, "//div[contains(@class, 'artdeco-modal')]")
                 )
             )
-            print(
-                "    ✅ [MODAL] Modal detectado! Procurando botão 'Send without a note'...",
-                flush=True,
-            )
-        except Exception as modal_wait_error:
-            print(
-                f"    ❌ [MODAL] Timeout esperando modal: {modal_wait_error}",
-                flush=True,
-            )
-            return False
+        except:
+            print("    -> [TIMEOUT] Modal não apareceu dentro do esperado", flush=True)
 
-    except Exception as e:
-        print(
-            f"    -> [ERROR] Failed to click 'Connect' button (JS/ActionChains): {e}",
-            flush=True,
-        )
-        return False  # Falhou na primeira etapa
-
-    # 1.5 NOVO: Fecha o modal "Add a note to your invitation?" clicando em "Send without a note"
-    modal_closed_successfully = False
-    try:
-        # Múltiplos seletores para o botão "Send without a note" com diferentes estratégias
-        send_without_note_selectors = [
-            # 1. Seletor por aria-label com contains (case-insensitive)
-            (
-                "XPATH 1 (aria-label)",
-                "//button[contains(@aria-label, 'Send without a note')]",
-            ),
-            # 2. Seletor por aria-label em português
-            ("XPATH 2 (Enviar)", "//button[contains(@aria-label, 'Enviar sem nota')]"),
-            # 3. Buscar span com texto e subir para button
-            (
-                "XPATH 3 (span ancestor)",
-                "//span[contains(text(), 'Send without a note')]/ancestor::button",
-            ),
-            # 4. Buscar button que contém span com o texto
-            (
-                "XPATH 4 (contains span)",
-                "//button[.//span[contains(text(), 'Send without a note')]]",
-            ),
-            # 5. Buscar o último button primário na actionbar (mais comum)
-            (
-                "XPATH 5 (actionbar primary)",
-                "//div[contains(@class, 'artdeco-modal__actionbar')]//button[contains(@class, 'artdeco-button--primary')]",
-            ),
-            # 6. Buscar button primário dentro do modal
-            (
-                "XPATH 6 (modal primary last)",
-                "//div[@data-test-modal-id='send-invite-modal']//button[contains(@class, 'artdeco-button--primary')][last()]",
-            ),
-            # 7. CSS Selector para button na actionbar
-            (
-                "CSS 7 (actionbar)",
-                "div.artdeco-modal__actionbar button.artdeco-button--primary",
-            ),
-            # 8. Buscar qualquer button ml1 que seja primary
-            (
-                "XPATH 8 (ml1 primary)",
-                "//button[contains(@class, 'artdeco-button--primary') and contains(@class, 'ml1')]",
-            ),
+        # 3. Tenta enviar apenas com button tipo "Send without note"
+        send_button_selectors = [
+            "//button[contains(@aria-label, 'Send without')]",
+            "//button[.//span[contains(text(), 'Send without')]]",
+            "//button[contains(@aria-label, 'Enviar sem')]",
         ]
 
-        btn_no_note = None
-        for selector_type, selector_value in send_without_note_selectors:
+        for sel in send_button_selectors:
             try:
-                print(f"    -> [DEBUG] Tentando {selector_type}...", flush=True)
-                if selector_type.startswith("CSS"):
-                    btn_no_note = WebDriverWait(browser, 3).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector_value))
-                    )
-                else:  # XPATH
-                    btn_no_note = WebDriverWait(browser, 3).until(
-                        EC.element_to_be_clickable((By.XPATH, selector_value))
-                    )
-                if btn_no_note:
-                    print(
-                        f"    ✅ [ENCONTRADO] Botão com seletor: {selector_type}",
-                        flush=True,
-                    )
-                    break
-            except Exception:
-                print(f"    ❌ [FALHOU] {selector_type}", flush=True)
+                btn_send = WebDriverWait(browser, 3).until(
+                    EC.presence_of_element_located((By.XPATH, sel))
+                )
+                if btn_send.is_displayed():
+                    browser.execute_script("arguments[0].click();", btn_send)
+                    print(f"    -> [SEND OK] Invite enviado para {name}", flush=True)
+                    SESSION_CONNECTION_COUNT += 1
+                    human_sleep(2, 4)
+                    return True
+            except:
                 continue
 
-        if btn_no_note:
-            print("    -> [CLICANDO] Executando clique no botão...", flush=True)
-            try:
-                browser.execute_script(
-                    "arguments[0].scrollIntoView(true);", btn_no_note
-                )
-                human_sleep(0.5, 1)
-                browser.execute_script("arguments[0].click();", btn_no_note)
+        # 4. Se não achou "Send without note", procura por qualquer botão primary
+        try:
+            primary_btns = browser.find_elements(
+                By.XPATH,
+                "//div[contains(@class, 'artdeco-modal__actionbar')]//button[contains(@class, 'artdeco-button--primary')]",
+            )
+            if primary_btns:
+                browser.execute_script("arguments[0].click();", primary_btns[-1])
                 print(
-                    "    ✅ [CLICADO] Botão 'Send without a note' foi clicado!",
+                    f"    -> [SEND FALLBACK] Invite enviado para {name} (fallback)",
                     flush=True,
                 )
-
-                # AGUARDA O MODAL DESAPARECER COMPLETAMENTE
-                print("    -> [AGUARDANDO] Esperando modal fechar...", flush=True)
-                try:
-                    WebDriverWait(browser, 10).until(
-                        EC.invisibility_of_element_located(
-                            (By.XPATH, "//div[@data-test-modal-id='send-invite-modal']")
-                        )
-                    )
-                    print(
-                        "    ✅ [MODAL FECHADO] Modal desapareceu com sucesso!",
-                        flush=True,
-                    )
-                    modal_closed_successfully = True
-                except Exception as modal_close_error:
-                    print(f"    ❌ [MODAL NÃO FECHOU] {modal_close_error}", flush=True)
-                    # Mesmo que o wait falhe, marca como sucesso se o clique foi feito
-                    modal_closed_successfully = True
-            except Exception as click_error:
-                print(f"    ❌ [ERRO AO CLICAR] {click_error}", flush=True)
-        else:
-            # Se nenhum seletor funcionou, tenta JavaScript puro para encontrar e clicar
-            if VERBOSE:
-                print(
-                    "    -> [DEBUG] Nenhum seletor funcionou. Tentando JS puro...",
-                    flush=True,
-                )
-            try:
-                # JavaScript que procura o botão e clica nele
-                js_code = """
-                var buttons = document.querySelectorAll('button');
-                for (var i = 0; i < buttons.length; i++) {
-                    if (buttons[i].getAttribute('aria-label') && 
-                        buttons[i].getAttribute('aria-label').includes('Send without a note')) {
-                        buttons[i].click();
-                        return true;
-                    }
-                    // Também procura por text content
-                    if (buttons[i].textContent && 
-                        buttons[i].textContent.includes('Send without a note') &&
-                        buttons[i].className.includes('artdeco-button--primary')) {
-                        buttons[i].click();
-                        return true;
-                    }
-                }
-                return false;
-                """
-                result = browser.execute_script(js_code)
-                if result:
-                    if VERBOSE:
-                        print("    -> [DEBUG] Botão clicado via JavaScript", flush=True)
-                    human_sleep(3, 5)
-                    modal_closed_successfully = True
-                else:
-                    if VERBOSE:
-                        print(
-                            "    -> [DEBUG] JavaScript não encontrou o botão",
-                            flush=True,
-                        )
-            except Exception as js_error:
-                if VERBOSE:
-                    print(
-                        f"    -> [DEBUG] Erro no JS: {str(js_error)[:50]}", flush=True
-                    )
-                pass
-    except Exception as modal_error:
-        # Se não encontrar o botão "Send without a note", continua (talvez o modal já esteja fechado)
-        if VERBOSE:
-            print(
-                f"    -> [DEBUG] Modal 'Send without a note' não encontrado: {str(modal_error)[:50]}",
-                flush=True,
-            )
-        pass
-
-    # SE conseguiu clicar em "Send without a note", marca como sucesso e retorna
-    if modal_closed_successfully:
-        CONNECTED = True
-        SESSION_CONNECTION_COUNT += 1
-        print(f"    -> [SUCCESS] Invite Sent (Direct - No Note) to: {name}", flush=True)
-        return True
-
-    # 2. Lógica de Envio de Nota vs. Envio Direto
-    if SEND_AI_NOTE == 1:
-        try:
-            xpath_add_note = (
-                "//button[@aria-label='Adicionar nota' or @aria-label='Add a note']"
-            )
-            btn_note = WebDriverWait(browser, 5).until(
-                EC.element_to_be_clickable((By.XPATH, xpath_add_note))
-            )
-            btn_note.click()
-            human_sleep(4, 6)  # Mais tempo após o clique na nota
-
-            print("    -> Generating AI Note (Waiting 10s)...")
-            time.sleep(10)
-
-            message = generate_invite_message(
-                name, headline, group_name, is_viewer=is_viewer
-            )
-
-            xpath_msg_box = "//textarea[@name='message']"
-            msg_box = browser.find_element(By.XPATH, xpath_msg_box)
-
-            human_type(msg_box, message)
-            human_sleep(3, 5)
-
-            # Tenta enviar a nota
-            xpath_send_button = "//button[contains(@class, 'artdeco-button--primary') and (.//span[text()='Enviar agora'] or .//span[text()='Send now'])]"
-            btn_send = WebDriverWait(browser, 5).until(
-                EC.element_to_be_clickable((By.XPATH, xpath_send_button))
-            )
-            browser.execute_script("arguments[0].click();", btn_send)
-
-            CONNECTED = True
-            SESSION_CONNECTION_COUNT += 1
-            print(f"-> [SUCCESS] Invite Sent with Note to: {name}\n    Note: {message}")
-            return True
-
-        except Exception as e:
-            print(f"-> Failed to add note ({e}). Trying 'Send without note'...")
-            # Tenta o fallback: enviar sem nota (se o modal de nota estiver aberto)
-            try:
-                # Múltiplos seletores para encontrar "Send without a note"
-                send_without_note_selectors = [
-                    "//button[@aria-label='Send without a note']",
-                    "//button[@aria-label='Enviar sem nota']",
-                    "//button//span[text()='Send without a note']/ancestor::button",
-                    "//button[contains(.//span, 'Send without a note')]",
-                    "//div[@class*='artdeco-modal__actionbar']//button[contains(@class, 'artdeco-button--primary')]",
-                ]
-
-                btn_no_note = None
-                for sel in send_without_note_selectors:
-                    try:
-                        btn_no_note = WebDriverWait(browser, 2).until(
-                            EC.element_to_be_clickable((By.XPATH, sel))
-                        )
-                        if btn_no_note:
-                            break
-                    except:
-                        continue
-
-                if btn_no_note:
-                    browser.execute_script("arguments[0].click();", btn_no_note)
-                    CONNECTED = True
-                    SESSION_CONNECTION_COUNT += 1
-                    print(
-                        f"-> [SUCCESS] Invite Sent (No Note - Note Failed) to: {name}"
-                    )
-                    return True
-                else:
-                    raise Exception("Could not find 'Send without a note' button")
-            except Exception as fallback_e:
-                # Se falhou a nota e o fallback, tenta fechar o modal
-                print(f"-> Fallback failed ({fallback_e}). Closing modal...")
-                try:
-                    browser.find_element(
-                        By.XPATH,
-                        "//button[@aria-label='Fechar' or @aria-label='Dismiss']",
-                    ).click()
-                except:
-                    pass
-                print("-> [FAIL] Total failure to send invite. Modal dismissed.")
-                return False
-
-    # 3. Envio Direto (SEND_AI_NOTE == 0)
-    else:
-        try:
-            # Tenta encontrar o botão de 'Enviar' ou 'Send' no primeiro modal (sem nota)
-            send_selectors_direct = [
-                "//button[contains(@class, 'artdeco-button--primary') and (.//span[text()='Enviar'] or .//span[text()='Send'])]",
-                "//button[contains(@class, 'artdeco-button--primary') and not(@disabled)]",  # fallback genérico
-            ]
-            sent = False
-            for sel in send_selectors_direct:
-                try:
-                    btn = WebDriverWait(browser, 3).until(
-                        EC.element_to_be_clickable((By.XPATH, sel))
-                    )
-                    natural_mouse_move(browser, btn)
-                    browser.execute_script("arguments[0].click();", btn)
-                    sent = True
-                    break
-                except:
-                    continue
-
-            if sent:
-                CONNECTED = True
                 SESSION_CONNECTION_COUNT += 1
-                print(f"-> [SUCCESS] Invite Sent (NO NOTE - Flag 0) to: {name}")
+                human_sleep(2, 4)
                 return True
-            else:
-                # Fecha o modal se não conseguir enviar
-                try:
-                    browser.find_element(
-                        By.XPATH,
-                        "//button[@aria-label='Fechar' or @aria-label='Dismiss']",
-                    ).click()
-                except:
-                    pass
-                print("-> [FAIL] Total failure to send direct invite. Modal dismissed.")
-                return False
+        except:
+            pass
 
-        except Exception as e:
-            print(f"-> Failed to send direct invite: {e}")
-            return False
+        # 5. Fallback final: fechar modal
+        print("    -> [PARTIAL] Modal não respondeu corretamente", flush=True)
+        try:
+            browser.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+        except:
+            pass
+        return False
+
+    except Exception as e:
+        if VERBOSE:
+            print(f"    -> [ERROR] click_connect_sequence falhou: {e}", flush=True)
+        try:
+            browser.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+        except:
+            pass
+        return False
 
 
 def run_extraction_process():
@@ -2687,12 +2941,16 @@ def run_networker(browser):
 # ==============================================================================
 
 
-def run_group_bot(browser):
+def run_group_bot(browser, extra_targets=None):
     """
     Versão Corrigida: Implementa Loop While com Scroll e log detalhado
     do perfil sendo visitado e a ação tomada.
     """
-    global SESSION_CONNECTION_COUNT, SESSION_FOLLOW_COUNT, CONNECTED
+    global \
+        GROUP_CONNECTION_COUNT, \
+        SESSION_FOLLOW_COUNT, \
+        CONNECTED, \
+        SESSION_CONNECTION_COUNT
     if SAVECSV:
         if not os.path.exists("CSV"):
             os.makedirs("CSV")
@@ -2718,6 +2976,10 @@ def run_group_bot(browser):
         group_name = "our group"
 
     print(f"-> Interagindo e Coletando (Meta: {PROFILES_TO_SCAN})...")
+
+    # Garante lista vazia se None (permite passar uma lista externa de perfis)
+    if extra_targets is None:
+        extra_targets = []
 
     profiles_queued = []
     scroll_attempts = 0
@@ -2804,6 +3066,13 @@ def run_group_bot(browser):
                 break  # Sai do loop se scroll falhar
             scroll_attempts += 1
 
+    # Integra targets externos (lista) ao final da coleta do grupo
+    if extra_targets:
+        print(f"-> Incorporando {len(extra_targets)} alvos externos à fila do grupo...")
+        for url in extra_targets:
+            if url not in profiles_queued:
+                profiles_queued.append(url)
+
     print(f"\n-> Coleta finalizada. Visitando {len(profiles_queued)} perfis...")
 
     # LOOP DE VISITA COM LOG DETALHADO
@@ -2840,16 +3109,20 @@ def run_group_bot(browser):
 
             endorse_skills(browser)
 
-            # 1. Tenta CONECTAR (se for alvo e houver limite)
-            if SESSION_CONNECTION_COUNT < CONNECTION_LIMIT:
+            # 1. Tenta CONECTAR (se for alvo e houver limite - Grupo tem seu próprio limite)
+            if GROUP_CONNECTION_COUNT < GROUP_CONNECTION_LIMIT:
                 if any(role in headline for role in TARGET_ROLES):
                     print(
-                        f"    -> [ALVO] Conectando ({SESSION_CONNECTION_COUNT}/{CONNECTION_LIMIT})..."
+                        f"    -> [ALVO] Conectando ({GROUP_CONNECTION_COUNT}/{GROUP_CONNECTION_LIMIT})..."
                     )
                     if connect_with_user(browser, name, headline, group_name):
                         status = "Connected"
+                        GROUP_CONNECTION_COUNT += 1
+                        SESSION_CONNECTION_COUNT += (
+                            1  # Mantém total de sessão para logging
+                        )
                         print(
-                            f"    -> [SUCCESS] **Conectado**. Total: {SESSION_CONNECTION_COUNT}/{CONNECTION_LIMIT}"
+                            f"    -> [SUCCESS] **Conectado**. Total: {GROUP_CONNECTION_COUNT}/{GROUP_CONNECTION_LIMIT}"
                         )
                         sleep_after_connection()
                     else:
@@ -2904,8 +3177,12 @@ def run_group_bot(browser):
             continue
 
     print("\n--- GRUPO FINALIZADO ---")
-    print(f"Total Connected na Sessão: {SESSION_CONNECTION_COUNT}/{CONNECTION_LIMIT}")
+    print(f"Total Connected (Grupo): {GROUP_CONNECTION_COUNT}/{GROUP_CONNECTION_LIMIT}")
     print(f"Total Followed na Sessão: {SESSION_FOLLOW_COUNT}/{FOLLOW_LIMIT}")
+    print("\n--- RESUMO GERAL ---")
+    print(f"Total de Conexões (Sniper + Grupo): {SESSION_CONNECTION_COUNT}")
+    print(f"  • Sniper: {SNIPER_CONNECTION_COUNT}/{SNIPER_CONNECTION_LIMIT}")
+    print(f"  • Grupo: {GROUP_CONNECTION_COUNT}/{GROUP_CONNECTION_LIMIT}")
 
 
 def random_mouse_hover(browser):
