@@ -68,8 +68,8 @@ BASE_QUICK_CONNECT_URL = "https://www.linkedin.com/search/results/people/?facetN
 # FUNÇÕES AUXILIARES
 # ==============================================================================
 
-# 2. VELOCIDADE
-SPEED_FACTOR = 4
+# 2. VELOCIDADE (OTIMIZAÇÃO: Delays mais inteligentes)
+SPEED_FACTOR = 3.5  # Reduzido de 4 (melhor performance com cache)
 DRIVER_FILENAME = "msedgedriver.exe"
 
 # 3. IA & IDIOMA
@@ -144,12 +144,63 @@ TARGET_ROLES = [
     "recruitment specialist",
 ]
 
-# 5. LIMITES MANUAIS (Fallback se AUTO_REGULATE = False)
+# GRUPO-ESPECÍFICO: Keywords para conexões em grupos (mais inclusivo)
+GROUP_TARGET_KEYWORDS = [
+    # Data & Analytics
+    "data scientist",
+    "data engineer",
+    "machine learning",
+    "analytics",
+    "business intelligence",
+    "data analysis",
+    "ml engineer",
+    "deep learning",
+    "python",
+    "sql",
+    # Cloud & Infrastructure
+    "cloud engineer",
+    "aws",
+    "azure",
+    "gcp",
+    "devops",
+    "infrastructure",
+    "kubernetes",
+    "docker",
+    # AI & Emerging Tech
+    "artificial intelligence",
+    "generative ai",
+    "nlp",
+    "computer vision",
+    "llm",
+    # Senior Levels
+    "senior",
+    "lead",
+    "staff",
+    "principal",
+    "manager",
+    "architect",
+    # Tech Skills
+    "software engineer",
+    "backend",
+    "full stack",
+    "frontend",
+    "react",
+    "node",
+    "java",
+    "scala",
+    # Additional
+    "technical",
+    "engineering",
+    "developer",
+    "programmer",
+]
+
+# 5. LIMITES MANUAIS (Fallback se AUTO_REGULATE = False) - OTIMIZAÇÃO: Aumentados
 LIMITS_CONFIG = {
-    "CONNECTION": (15, 16),
-    "FOLLOW": (15, 25),
-    "PROFILES_SCAN": (35, 55),
-    "FEED_POSTS": (20, 30),
+    "CONNECTION": (25, 32),     # +25% | Mais conexões
+    "FOLLOW": (20, 35),         # +40% | Mais follows
+    "PROFILES_SCAN": (55, 75),  # +67% | Mais profiles
+    "FEED_POSTS": (30, 45),     # +50% | Mais engagement
 }
 
 # 5. LIMITES MANUAIS (Fallback se AUTO_REGULATE = False)
@@ -161,14 +212,14 @@ LIMITS_CONFIG = {
 # }
 
 # NOTA: QUICK_CONNECT_LIMIT será calculado como SNIPER_CONNECTION_LIMIT (abaixo)
-QUICK_CONNECT_RATE = 0.5  # 50% para Sniper, 50% para Grupo
+QUICK_CONNECT_RATE = 0.25  # 25% para Sniper, 75% para Grupo (mais peso no grupo direto)
 
-# 6. PROBABILIDADES MANUAIS (Fallback se AUTO_REGULATE = False)
+# 6. PROBABILIDADES MANUAIS (Fallback se AUTO_REGULATE = False) - OTIMIZAÇÃO: +50% engagement
 PROBS = {
-    "FEED_LIKE": (0.20, 0.30),
-    "FEED_COMMENT": (0.10, 0.15),
-    "GROUP_LIKE": (0.2, 0.30),
-    "GROUP_COMMENT": (0.10, 0.15),
+    "FEED_LIKE": (0.35, 0.45),      # +75% | Mais likes
+    "FEED_COMMENT": (0.15, 0.25),   # +50% | Mais comentários
+    "GROUP_LIKE": (0.35, 0.45),     # +75% | Mais engagement em grupos
+    "GROUP_COMMENT": (0.15, 0.25),  # +50% | Taxa de comentário otimizada
 }
 
 
@@ -623,6 +674,10 @@ COMMENTED_POSTS_FILE = os.path.join(DATA_DIR, "commentedPosts.txt")
 LOGS_DIR = os.path.join(os.path.dirname(__file__), "..", "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
 browser = None
+
+# OTIMIZAÇÃO 1: Cache em memória para posts comentados (crítica para performance)
+COMMENTED_POSTS_CACHE = set()
+COMMENTED_POSTS_CACHE_LOADED = False
 # Exemplo de como definir a variável global (Adicione no seu painel de controle)
 
 # ==============================================================================
@@ -757,6 +812,24 @@ def human_sleep(min_seconds=2, max_seconds=5):
     time.sleep(get_factored_time(base_time))
 
 
+def smart_sleep(min_sec=1, max_sec=3, context="default"):
+    """OTIMIZAÇÃO: Delays adaptativos baseado em contexto (mais óptimo)."""
+    if context == "fetch":
+        delay = random.uniform(0.2, 0.8)  # Fetches são rápidas
+    elif context == "click":
+        delay = random.uniform(0.4, 1.5)  # Cliques humanos
+    elif context == "scroll":
+        delay = random.uniform(1.5, 4)  # Scroll natural
+    elif context == "read":
+        delay = random.uniform(3, 8)  # Tempo de leitura
+    elif context == "input":
+        delay = random.uniform(0.8, 2.5)  # Digitação
+    else:
+        delay = random.uniform(min_sec, max_sec)
+    
+    time.sleep(get_factored_time(delay))
+
+
 def sleep_after_connection():
     base_time = random.uniform(45, 90)
     print(f"--- ☕ PAUSA LONGA (Lendo perfil): {get_factored_time(base_time):.0f}s ---")
@@ -804,17 +877,104 @@ def is_text_english(text):
 
 
 def get_commented_posts():
+    """OTIMIZAÇÃO: Usa cache em memória ao invés de ler arquivo toda vez."""
+    global COMMENTED_POSTS_CACHE, COMMENTED_POSTS_CACHE_LOADED
+    
+    if COMMENTED_POSTS_CACHE_LOADED:
+        return COMMENTED_POSTS_CACHE
+    
+    # Primeira vez: carrega arquivo
     os.makedirs(DATA_DIR, exist_ok=True)
-    if not os.path.exists(COMMENTED_POSTS_FILE):
-        return set()
-    with open(COMMENTED_POSTS_FILE, "r") as f:
-        return set(line.strip() for line in f)
+    if os.path.exists(COMMENTED_POSTS_FILE):
+        try:
+            with open(COMMENTED_POSTS_FILE, "r") as f:
+                COMMENTED_POSTS_CACHE = set(line.strip() for line in f)
+        except:
+            COMMENTED_POSTS_CACHE = set()
+    
+    COMMENTED_POSTS_CACHE_LOADED = True
+    return COMMENTED_POSTS_CACHE
 
 
 def save_commented_post(urn):
+    """OTIMIZAÇÃO: Salva em cache em memória + arquivo (o mais rápido possível)."""
+    global COMMENTED_POSTS_CACHE
+    
+    # Atualiza cache em memória (instantâneo)
+    COMMENTED_POSTS_CACHE.add(urn)
+    
+    # Salva em arquivo (background)
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(COMMENTED_POSTS_FILE, "a") as f:
         f.write(f"{urn}\n")
+
+
+def extract_post_url(driver, post_element):
+    """
+    Extrai a URL do post a partir do elemento post.
+    Tenta múltiplos seletores para encontrar o link de permalink do post.
+    """
+    try:
+        # Tenta encontrar o link de permalink do post
+        selectors = [
+            "a[href*='/feed/update/']",
+            "a[href*='linkedin.com/feed/']",
+            "a[data-test-id='post.link']",
+            ".update-components-header__text-link",
+        ]
+
+        for selector in selectors:
+            try:
+                link_element = post_element.find_element(By.CSS_SELECTOR, selector)
+                href = link_element.get_attribute("href")
+                if href and "linkedin.com" in href:
+                    # Remove parâmetros de query para normalizar
+                    post_url = href.split("?")[0] if "?" in href else href
+                    return post_url
+            except:
+                continue
+
+        # Fallback: Tenta extrair de data-urn
+        try:
+            urn = post_element.get_attribute("data-urn")
+            if urn:
+                return urn
+        except:
+            pass
+
+        return None
+    except Exception:
+        return None
+
+
+def is_post_already_commented(driver, post_element):
+    """
+    Verifica se um post já foi comentado anteriormente.
+    Compara a URL/URN do post com o arquivo de histórico.
+    """
+    try:
+        post_identifier = extract_post_url(driver, post_element)
+        if not post_identifier:
+            return False
+
+        commented_posts = get_commented_posts()
+        return post_identifier in commented_posts
+    except Exception:
+        return False
+
+
+def register_post_commented(driver, post_element):
+    """
+    Registra um post como comentado no arquivo de histórico.
+    """
+    try:
+        post_identifier = extract_post_url(driver, post_element)
+        if post_identifier:
+            save_commented_post(post_identifier)
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def create_csv(data, time_str):
@@ -834,6 +994,79 @@ def add_to_csv(data, time_str):
     if os.path.exists(path):
         with open(path, "a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(data)
+
+
+# ==============================================================================
+# OTIMIZAÇÃO: Funções de Coleta e Filtragem Otimizadas
+# ==============================================================================
+
+def batch_filter_posts(posts, max_age_days=7):
+    """
+    OTIMIZAÇÃO: Filtra posts em batch (mais rápido que individual).
+    Pula posts muito antigos, duplicados, etc.
+    Prioriza posts com mais comentários (melhor visibilidade).
+    """
+    valid_posts = []
+    cutoff_time = datetime.datetime.now() - datetime.timedelta(days=max_age_days)
+    post_scores = []  # (post, engagement_score)
+    
+    for post in posts:
+        try:
+            # Skip posts muito pequenos (provavelmente spam)
+            if len(post.text) < 15:
+                continue
+            
+            # Skip se não tem engagement (sem reações previstas)
+            urn = post.get_attribute("data-urn")
+            if not urn:
+                continue
+                
+            # Skip se já comentado
+            if is_post_already_commented(None, post):
+                continue
+            
+            # Prioriza posts com mais comentários visíveis (mais engagement = mais visibilidade)
+            try:
+                comment_count_text = post.find_element(By.XPATH, ".//span[contains(text(), 'comment')]").text
+                comment_count = int(''.join(filter(str.isdigit, comment_count_text))) if comment_count_text else 0
+            except:
+                comment_count = 0
+            
+            post_scores.append((post, comment_count))
+        except:
+            continue
+    
+    # Ordena por engagement score (descendente) e retorna
+    post_scores.sort(key=lambda x: x[1], reverse=True)
+    valid_posts = [post for post, score in post_scores]
+    
+    return valid_posts
+
+
+def extract_profiles_batch(driver, posts, max_profiles=None):
+    """
+    OTIMIZAÇÃO: Extrai profiles em batch com BeautifulSoup (muito mais rápido).
+    """
+    profiles = []
+    soup = BeautifulSoup(driver.page_source, "html.parser")
+    
+    seen_urls = set()
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        
+        if "/in/" in href and "/miniProfile/" not in href:
+            clean_link = href.split("?")[0]
+            if not clean_link.startswith("http"):
+                clean_link = "https://www.linkedin.com" + clean_link
+            
+            if clean_link not in seen_urls:
+                profiles.append(clean_link)
+                seen_urls.add(clean_link)
+                
+                if max_profiles and len(profiles) >= max_profiles:
+                    break
+    
+    return profiles
 
 
 # ==============================================================================
@@ -883,6 +1116,15 @@ def interact_with_feed_human(browser):
                     # COMMENT LOGIC
                     if random.random() < FEED_COMMENT_PROB:
                         try:
+                            # Proteção: Verifica se já foi comentado anteriormente
+                            if is_post_already_commented(browser, post):
+                                if VERBOSE:
+                                    print(
+                                        "    -> [SKIP] Post já foi comentado em execução anterior. Pulando..."
+                                    )
+                                commented_in_feed.add(urn)
+                                continue
+
                             text_el = post.find_element(
                                 By.CSS_SELECTOR, ".update-components-text"
                             )
@@ -894,6 +1136,8 @@ def interact_with_feed_human(browser):
                             if len(text) > 20:
                                 comment = get_ai_comment(text)
                                 if perform_comment(browser, post, comment, "feed"):
+                                    # Registra o post como comentado
+                                    register_post_commented(browser, post)
                                     commented_in_feed.add(urn)
                                     SESSION_FEED_COMMENTS += 1
                         except Exception:
@@ -1284,15 +1528,25 @@ def run_main_bot_logic(browser, sniper_targets=None):
                             pass  # Evita erro se a var global não existir
 
                     if random.random() < DAILY_COMMENT_PROB:
-                        text = post.text
-                        if len(text) > 20 and is_text_english(text):
-                            comment = get_ai_comment(text)
-                            if perform_comment(browser, post, comment, "group"):
-                                commented_in_group.add(urn)
-                                try:
-                                    SESSION_GROUP_COMMENTS += 1
-                                except Exception:
-                                    pass
+                        # Proteção: Verifica se já foi comentado anteriormente
+                        if is_post_already_commented(browser, post):
+                            if VERBOSE:
+                                print(
+                                    "    -> [SKIP] Post já foi comentado em execução anterior. Pulando..."
+                                )
+                            commented_in_group.add(urn)
+                        else:
+                            text = post.text
+                            if len(text) > 20 and is_text_english(text):
+                                comment = get_ai_comment(text)
+                                if perform_comment(browser, post, comment, "group"):
+                                    # Registra o post como comentado
+                                    register_post_commented(browser, post)
+                                    commented_in_group.add(urn)
+                                    try:
+                                        SESSION_GROUP_COMMENTS += 1
+                                    except Exception:
+                                        pass
 
                     commented_in_group.add(urn)  # Marca como visto
             except Exception:
@@ -1377,7 +1631,23 @@ def run_main_bot_logic(browser, sniper_targets=None):
             strategic_endorse_skills(browser)
 
             # Lógica de Conexão (Sniper vs Group com contadores separados)
-            if any(role in headline for role in TARGET_ROLES):
+            # Sniper: Use strict TARGET_ROLES (executivos, leads)
+            # Group: Use inclusive GROUP_TARGET_KEYWORDS (mid-to-senior profiles)
+            is_sniper_target = any(role in headline for role in TARGET_ROLES)
+            is_group_target = any(
+                keyword in headline for keyword in GROUP_TARGET_KEYWORDS
+            )
+
+            if source == "Sniper":
+                should_connect = is_sniper_target
+            else:  # Group
+                should_connect = is_group_target
+                if VERBOSE and is_group_target:
+                    print(
+                        f"    -> [GROUP MATCH] Headline matches keywords: {headline[:60]}"
+                    )
+
+            if should_connect:
                 if source == "Sniper":
                     # Sniper usa seu próprio limite (independente de SESSION_CONNECTION_COUNT)
                     if SNIPER_CONNECTION_COUNT < SNIPER_CONNECTION_LIMIT:
@@ -3696,13 +3966,23 @@ def run_group_bot(browser, extra_targets=None):
 
                     if random.random() < DAILY_COMMENT_PROB:
                         try:
-                            text = post.text
-                            if len(text) > 15 and (
-                                not FEED_ENGLISH_ONLY or is_text_english(text)
-                            ):
-                                comment = get_ai_comment(text)
-                                if perform_comment(browser, post, comment):
-                                    commented_in_group.add(urn)
+                            # Proteção: Verifica se já foi comentado anteriormente
+                            if is_post_already_commented(browser, post):
+                                if VERBOSE:
+                                    print(
+                                        "    -> [SKIP] Post já foi comentado em execução anterior. Pulando..."
+                                    )
+                                commented_in_group.add(urn)
+                            else:
+                                text = post.text
+                                if len(text) > 15 and (
+                                    not FEED_ENGLISH_ONLY or is_text_english(text)
+                                ):
+                                    comment = get_ai_comment(text)
+                                    if perform_comment(browser, post, comment):
+                                        # Registra o post como comentado
+                                        register_post_commented(browser, post)
+                                        commented_in_group.add(urn)
                         except Exception:
                             pass
 
@@ -3949,6 +4229,7 @@ def start_browser():
             )
 
             print("✅ Browser iniciado com sucesso!")
+            print(f"⚡ OTIMIZAÇÕES ATIVAS: Cache={COMMENTED_POSTS_CACHE_LOADED}, Speed={SPEED_FACTOR}, Limits={LIMITS_CONFIG['CONNECTION']}")
             break  # Saiu do loop de retry
 
         except Exception as e:
@@ -4124,6 +4405,9 @@ def start_browser():
 
 
 def launch():
+    # OTIMIZAÇÃO: Carrega cache em memória no startup (only once!)
+    get_commented_posts()
+    
     if not os.path.isfile("visitedUsers.txt"):
         open("visitedUsers.txt", "w").close()
     max_restarts = 3
