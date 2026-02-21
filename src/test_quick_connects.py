@@ -54,7 +54,7 @@ def main():
     finally:
         try:
             driver.quit()
-        except:
+        except Exception:
             pass
 
 

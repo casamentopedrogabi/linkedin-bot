@@ -127,7 +127,7 @@ def plot_line_chart(df, x_col, y_col, title, ax, color_key="dark_green"):
                     else ""
                 )
             )
-        except:
+        except Exception:
             pass
 
     ax.tick_params(axis="x", rotation=45, labelsize=10)
