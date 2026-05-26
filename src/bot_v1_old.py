@@ -69,7 +69,7 @@ BASE_QUICK_CONNECT_URL = "https://www.linkedin.com/search/results/people/?facetN
 # ==============================================================================
 
 # 2. VELOCIDADE (OTIMIZAÇÃO: Delays mais inteligentes)
-SPEED_FACTOR = random.uniform(2.8, 4.2)  # Varia por sessão (stealth)
+SPEED_FACTOR = 3.5  # Reduzido de 4 (melhor performance com cache)
 DRIVER_FILENAME = "msedgedriver.exe"
 
 # 3. IA & IDIOMA
@@ -218,7 +218,6 @@ QUICK_CONNECT_RATE = 0.25  # 25% para Sniper, 75% para Grupo (mais peso no grupo
 PROBS = {
     "FEED_LIKE": (0.35, 0.45),  # +75% | Mais likes
     "FEED_COMMENT": (0.1, 0.2),  # +50% | Mais comentários
-    "FEED_SHARE": (0.03, 0.07),  # NOVO | Repost de posts (SSI Insights pilar)
     "GROUP_LIKE": (0.35, 0.45),  # +75% | Mais engagement em grupos
     "GROUP_COMMENT": (0.1, 0.2),  # +50% | Taxa de comentário otimizada
 }
@@ -306,17 +305,6 @@ def init_db():
                     status TEXT DEFAULT 'pending'
                 )""")
 
-    # Tabela de Autores Comentados (cooldown semanal por autor)
-    # author_id = slug normalizado do perfil (ex: 'john-doe-12345')
-    c.execute("""CREATE TABLE IF NOT EXISTS commented_authors (
-                    author_id TEXT,
-                    author_url TEXT,
-                    post_url TEXT,
-                    commented_at DATETIME
-                )""")
-    c.execute("""CREATE INDEX IF NOT EXISTS idx_commented_authors_author_id
-                 ON commented_authors(author_id, commented_at)""")
-
     # Lógica para adicionar colunas faltantes
     try:
         c.execute("SELECT followers FROM profile_analytics LIMIT 1")
@@ -342,12 +330,6 @@ def init_db():
         c.execute("SELECT group_likes FROM profile_analytics LIMIT 1")
     except sqlite3.OperationalError:
         c.execute("ALTER TABLE profile_analytics ADD COLUMN group_likes INT")
-
-    # Migration: adiciona accepted_at em connection_sent (para tracking de aceites)
-    try:
-        c.execute("SELECT accepted_at FROM connection_sent LIMIT 1")
-    except sqlite3.OperationalError:
-        c.execute("ALTER TABLE connection_sent ADD COLUMN accepted_at DATETIME")
 
     conn.commit()
     conn.close()
@@ -627,40 +609,6 @@ def calculate_smart_parameters():
 if AUTO_REGULATE:
     LIMITS_CONFIG, PROBS = calculate_smart_parameters()
 
-
-# AUTO-ADJUST: Se acceptance rate < 30%, reduz alvos (sinal de baixa relevancia)
-def _auto_adjust_for_acceptance_rate():
-    """
-    Se taxa de aceitacao dos ultimos 14 dias estiver < 30%, reduz limites em 40%.
-    Protege a saude da conta: alta taxa de envio + baixa aceitacao = ban risk.
-    """
-    global LIMITS_CONFIG
-    try:
-        rate, sent, accepted = get_acceptance_rate(days=14)
-        if sent >= 10:  # So aplica se ja ha amostra significativa
-            print(
-                f"\n📊 [ACCEPTANCE RATE] {rate:.1f}% ({accepted}/{sent} aceitos nos ultimos 14 dias)"
-            )
-            if rate < 30:
-                print(
-                    "    ⚠️  Taxa < 30%! Reduzindo alvos em 40% para proteger conta..."
-                )
-                new_limits = {}
-                for key, (lo, hi) in LIMITS_CONFIG.items():
-                    new_limits[key] = (max(1, int(lo * 0.6)), max(2, int(hi * 0.6)))
-                LIMITS_CONFIG = new_limits
-                print(f"    -> Novos limites: {LIMITS_CONFIG}")
-            elif rate >= 60:
-                print(
-                    f"    ✅ Taxa excelente! Mantendo limites atuais."
-                )
-    except Exception as e:
-        if VERBOSE:
-            print(f"    [AUTO ADJUST ERROR] {e}")
-
-
-_auto_adjust_for_acceptance_rate()
-
 # ==============================================================================
 # INICIALIZAÇÃO DE VARIÁVEIS GLOBAIS
 # ==============================================================================
@@ -678,12 +626,12 @@ FEED_POSTS_LIMIT = int(
     random.randint(LIMITS_CONFIG["FEED_POSTS"][0], LIMITS_CONFIG["FEED_POSTS"][1])
 )
 
-# if random.randint(0, 30) == 0:
-#     CONNECTION_LIMIT = 0
-#     print("conection set 0")
-# if random.randint(0, 30) == 0:
-#     FOLLOW_LIMIT = 0
-#     print("follow limit set 0")
+if random.randint(0, 30) == 0:
+    CONNECTION_LIMIT = 0
+    print("conection set 0")
+if random.randint(0, 30) == 0:
+    FOLLOW_LIMIT = 0
+    print("follow limit set 0")
 
 
 PAG_ABERTAS = PROFILES_TO_SCAN
@@ -691,54 +639,12 @@ FEED_URL = "https://www.linkedin.com/feed/"
 random_key = random.randint(0, len(LINKEDIN_GROUPS_LIST) - 1)
 GROUP_URL = LINKEDIN_GROUPS_LIST[random_key]
 
-def get_daily_activity_multiplier():
-    """
-    Multiplier que varia por dia para quebrar o padrao fixo diario.
-    Persistido em arquivo flag por dia (mesmo valor entre runs do mesmo dia).
-    Distribuicao: ~25% dias "LOW" (0.25-0.55), ~50% "NORMAL" (0.75-1.15),
-    ~25% "BURST" (1.30-1.70). Resultado: alguns dias com poucos comentarios,
-    alguns com muitos — quebra padrao de atividade fixo.
-    """
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
-    flag = os.path.join(DATA_DIR, f"daily_mult_{today}.flag")
-    if os.path.exists(flag):
-        try:
-            with open(flag, "r") as f:
-                return float(f.read().strip())
-        except Exception:
-            pass
-    r = random.random()
-    if r < 0.25:
-        mult = random.uniform(0.25, 0.55)
-        label = "LOW"
-    elif r < 0.75:
-        mult = random.uniform(0.75, 1.15)
-        label = "NORMAL"
-    else:
-        mult = random.uniform(1.30, 1.70)
-        label = "BURST"
-    os.makedirs(DATA_DIR, exist_ok=True)
-    try:
-        with open(flag, "w") as f:
-            f.write(f"{mult:.3f}")
-    except Exception:
-        pass
-    print(f"📅 [DAILY VARIATION] Hoje e dia {label} (mult={mult:.2f}x)")
-    return mult
-
-
-DAILY_ACTIVITY_MULT = get_daily_activity_multiplier()
-
-DAILY_LIKE_PROB = min(1.0, random.uniform(PROBS["GROUP_LIKE"][0], PROBS["GROUP_LIKE"][1]) * DAILY_ACTIVITY_MULT)
-DAILY_COMMENT_PROB = min(1.0, random.uniform(
+DAILY_LIKE_PROB = random.uniform(PROBS["GROUP_LIKE"][0], PROBS["GROUP_LIKE"][1])
+DAILY_COMMENT_PROB = random.uniform(
     PROBS["GROUP_COMMENT"][0], PROBS["GROUP_COMMENT"][1]
-) * DAILY_ACTIVITY_MULT)
-FEED_LIKE_PROB = min(1.0, random.uniform(PROBS["FEED_LIKE"][0], PROBS["FEED_LIKE"][1]) * DAILY_ACTIVITY_MULT)
-FEED_COMMENT_PROB = min(1.0, random.uniform(PROBS["FEED_COMMENT"][0], PROBS["FEED_COMMENT"][1]) * DAILY_ACTIVITY_MULT)
-FEED_SHARE_PROB = random.uniform(
-    PROBS.get("FEED_SHARE", (0.03, 0.07))[0],
-    PROBS.get("FEED_SHARE", (0.03, 0.07))[1],
 )
+FEED_LIKE_PROB = random.uniform(PROBS["FEED_LIKE"][0], PROBS["FEED_LIKE"][1])
+FEED_COMMENT_PROB = random.uniform(PROBS["FEED_COMMENT"][0], PROBS["FEED_COMMENT"][1])
 
 SESSION_CONNECTION_COUNT = 0
 SESSION_FOLLOW_COUNT = 0
@@ -768,46 +674,6 @@ COMMENTED_POSTS_FILE = os.path.join(DATA_DIR, "commentedPosts.txt")
 LOGS_DIR = os.path.join(os.path.dirname(__file__), "..", "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
 browser = None
-
-# Credenciais de re-login automatico (acionado quando o LinkedIn desloga a sessao).
-# Carregadas do .env (gitignored) para nao subir para o repositorio.
-def _load_env_file(path):
-    """Parser .env minimalista (KEY=VALUE), sem dependencia externa."""
-    loaded = {}
-    if not os.path.exists(path):
-        return loaded
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, _, v = line.partition("=")
-                k = k.strip()
-                v = v.strip().strip('"').strip("'")
-                if k:
-                    loaded[k] = v
-                    # Tambem expoe via os.environ
-                    os.environ.setdefault(k, v)
-    except Exception:
-        pass
-    return loaded
-
-
-_ENV_PATH = os.path.join(os.path.dirname(__file__), "..", ".env")
-_load_env_file(_ENV_PATH)  # popula os.environ a partir do .env (gitignored)
-
-LINKEDIN_EMAIL = os.environ.get("LINKEDIN_EMAIL", "")
-LINKEDIN_PASSWORD = os.environ.get("LINKEDIN_PASSWORD", "")
-
-if not LINKEDIN_EMAIL or not LINKEDIN_PASSWORD:
-    print(
-        "⚠️ [CREDS] LINKEDIN_EMAIL/LINKEDIN_PASSWORD nao definidos. "
-        f"Crie {_ENV_PATH} com:\n"
-        "    LINKEDIN_EMAIL=seu_email\n"
-        "    LINKEDIN_PASSWORD=sua_senha\n"
-        "Relogin automatico ficara desativado ate isso ser configurado."
-    )
 
 # OTIMIZAÇÃO 1: Cache em memória para posts comentados (crítica para performance)
 COMMENTED_POSTS_CACHE = set()
@@ -988,110 +854,17 @@ def human_scroll(browser):
 
 
 def human_type(element, text):
-    """
-    Digita como humano com erros, variacao de tempo, pausa em pontuacao
-    e ocasional "segunda-pensada" (digita, pausa, apaga umas letras e refaz).
-    """
-    if not text:
-        return
-
-    i = 0
-    n = len(text)
-    second_thought_used = False  # Acontece no max 1x por digitacao
-
-    while i < n:
-        char = text[i]
-
-        # 4% chance de typo (digita errado, apaga, redigita)
-        if random.random() < 0.04 and char.isalpha():
+    """Digita como humano com erros e variações de tempo."""
+    for char in text:
+        if random.random() < 0.04:  # 4% chance de erro
             wrong_char = random.choice("abcdefghijklmnopqrstuvwxyz")
-            try:
-                element.send_keys(wrong_char)
-                time.sleep(random.uniform(0.12, 0.32))
-                element.send_keys(Keys.BACKSPACE)
-                time.sleep(random.uniform(0.10, 0.22))
-            except Exception:
-                pass
+            element.send_keys(wrong_char)
+            time.sleep(random.uniform(0.1, 0.3))
+            element.send_keys(Keys.BACKSPACE)
+            time.sleep(random.uniform(0.1, 0.2))
 
-        try:
-            element.send_keys(char)
-        except Exception:
-            return
-
-        # Pausa base entre teclas
-        delay = random.uniform(0.06, 0.24)
-
-        # Pausa maior em pontuacao (humanos repousam depois de , . ; : ! ?)
-        if char in ".!?":
-            delay += random.uniform(0.35, 0.85)
-        elif char in ",;:":
-            delay += random.uniform(0.15, 0.40)
-        elif char == " " and random.random() < 0.08:
-            # 8% chance de uma "pausa de pensamento" no meio de uma frase
-            delay += random.uniform(0.30, 0.90)
-
-        time.sleep(delay)
-
-        # Segunda-pensada: depois de uns 12-25 chars, 6% de chance de apagar
-        # 2-4 chars e retomar (simula reconsiderar uma palavra)
-        if (
-            not second_thought_used
-            and 12 <= i <= n - 6
-            and random.random() < 0.06
-        ):
-            try:
-                backspaces = random.randint(2, 4)
-                time.sleep(random.uniform(0.25, 0.65))  # pausa antes de apagar
-                for _ in range(backspaces):
-                    element.send_keys(Keys.BACKSPACE)
-                    time.sleep(random.uniform(0.06, 0.15))
-                # Redigita os caracteres apagados (mesmo texto)
-                start = max(0, i + 1 - backspaces)
-                for c in text[start:i + 1]:
-                    element.send_keys(c)
-                    time.sleep(random.uniform(0.07, 0.20))
-                second_thought_used = True
-            except Exception:
-                pass
-
-        i += 1
-
-
-def reading_time_for_text(text, wpm_range=(200, 320), min_seconds=2.5, max_seconds=22.0):
-    """
-    Tempo de leitura proporcional ao tamanho do texto.
-    Modela um leitor humano: ~200-320 wpm com variacao individual.
-    Resultado e clampado em [min_seconds, max_seconds] e passa pelo SPEED_FACTOR.
-    """
-    if not text:
-        return get_factored_time(random.uniform(min_seconds, min_seconds + 1.5))
-    words = max(1, len(re.findall(r"\b\w+\b", text)))
-    wpm = random.uniform(*wpm_range)
-    base = (words / wpm) * 60.0
-    # Variacao individual +/- 25%
-    base *= random.uniform(0.75, 1.25)
-    base = max(min_seconds, min(max_seconds, base))
-    return get_factored_time(base)
-
-
-# Cooldown global entre comentarios — humanos nao comentam 5 posts em 30s.
-_LAST_COMMENT_TS = 0.0
-_MIN_GAP_BETWEEN_COMMENTS = (60, 180)  # 1-3 minutos minimo
-
-
-def can_comment_now():
-    """True se ja passou o cooldown desde o ultimo comentario da sessao."""
-    if _LAST_COMMENT_TS == 0.0:
-        return True
-    elapsed = time.time() - _LAST_COMMENT_TS
-    min_gap = random.uniform(*_MIN_GAP_BETWEEN_COMMENTS)
-    return elapsed >= get_factored_time(min_gap)
-
-
-def mark_comment_done():
-    """Registra timestamp do comentario para o proximo cooldown."""
-    global _LAST_COMMENT_TS
-    _LAST_COMMENT_TS = time.time()
+        element.send_keys(char)
+        time.sleep(random.uniform(0.06, 0.28))  # Variação natural
 
 
 def is_text_english(text):
@@ -1100,293 +873,6 @@ def is_text_english(text):
             return False
         return detect(text) == "en"
     except LangDetectException:
-        return False
-
-
-def is_text_supportable(text):
-    """
-    Verifica se um post está em idioma que vale a pena comentar.
-    Aceita: EN + linguas europeias principais (DE/FR/ES/IT/NL/SV/etc.).
-    Rejeita: PT (foco eh anti-BR), idiomas asiaticos, raros.
-    Sempre comentamos em INGLES mesmo em posts europeus (lingua tech global).
-    """
-    try:
-        if not text or len(text) < 10:
-            return False
-        lang = detect(text)
-        # EN sempre. Europeias principais OK. PT (brasileiro) rejeitado.
-        supportable = {"en", "de", "fr", "es", "it", "nl", "sv", "no", "da", "fi"}
-        return lang in supportable
-    except LangDetectException:
-        return False
-
-
-# Minimo de conteudo real (sem URLs/hashtags) para um post ser considerado "comentavel".
-MIN_POST_CONTENT_CHARS = 200
-
-_JOB_POSTING_KEYWORDS = (
-    # English
-    "we're hiring", "we are hiring", "now hiring", "now recruiting",
-    "join our team", "join the team", "apply now", "apply here",
-    "apply through", "job opening", "job openings", "open position",
-    "open positions", "open role", "open roles", "vacancy", "vacancies",
-    "looking for a ", "looking for an ", "looking to hire", "seeking a ",
-    "send your cv", "send your resume", "send me your cv", "send me your resume",
-    "dm me your cv", "dm your cv", "drop your cv", "drop me your cv",
-    "share your cv", "share your resume", "ping me your cv", "hiring alert",
-    "#hiring", "#nowhiring", "#jobopening", "#jobalert",
-    # Portuguese / Spanish
-    "estamos contratando", "vaga aberta", "vagas abertas", "estamos buscando",
-    "estamos a procurar", "se busca", "oportunidade de emprego",
-    "envie seu cv", "envia teu cv", "manda seu cv",
-    # German / French / Dutch
-    "wir stellen ein", "wir suchen", "nous recrutons", "nous cherchons",
-    "we zoeken", "wij zoeken",
-)
-
-# Conteudo sensivel — comentario AI generico seria inapropriado.
-_SENSITIVE_KEYWORDS = (
-    # Luto / falecimento
-    "passed away", "rest in peace", "rip ", " rip,", " rip.", "in loving memory",
-    "in memory of", "we lost", "we mourn", "condolences", "deeply saddened",
-    "with heavy heart", "with a heavy heart", "funeral", "memorial service",
-    "faleceu", "descanse em paz", "perdemos",
-    # Doenca grave / saude mental
-    "cancer diagnosis", "diagnosed with cancer", "battling cancer",
-    "mental health crisis", "suicide", "took their own life",
-    # Demissao / layoff (pessoal, requer empatia especifica)
-    "i was laid off", "i've been laid off", "i have been laid off",
-    "i got laid off", "lost my job", "got let go", "let go from",
-    "fui demitido", "fui demitida", "perdi meu emprego",
-)
-
-# Promocao explicita / call-to-action de venda — comentar pode parecer endorsement falso.
-_PROMO_KEYWORDS = (
-    "book launch", "launching my book", "my new book", "pre-order my",
-    "course launch", "enrollment is open", "enroll now", "sign up for my",
-    "register for my webinar", "join my webinar", "join my masterclass",
-    "early bird discount", "limited spots", "spots are filling fast",
-    "link in bio", "dm me for details", "swipe up", "use code ",
-    "promo code", "discount code", "affiliate link",
-)
-
-# Tags que LinkedIn usa para marcar conteudo patrocinado/poll/event.
-_SPONSORED_MARKERS = (
-    "promoted", "sponsored", "anúncio", "patrocinado", "publicidad",
-)
-_POLL_MARKERS = (
-    "see results", "vote here", "cast your vote",
-    " poll ", "linkedin poll",
-)
-
-
-def _strip_noise(text):
-    """Remove URLs e hashtags para medir conteudo real."""
-    t = re.sub(r"https?://\S+", "", text)
-    t = re.sub(r"www\.\S+", "", t)
-    t = re.sub(r"#\w+", "", t)  # hashtags
-    t = re.sub(r"@\w+", "", t)  # mentions
-    return t.strip()
-
-
-def is_post_worth_commenting(text, post_element=None):
-    """
-    Filtro defensivo: NUNCA comentar em posts que cairem em alguma categoria abaixo.
-
-    Rejeita:
-      - Posts pequenos (< MIN_POST_CONTENT_CHARS de conteudo real sem URLs/hashtags)
-      - Posts dominados por URL (link sem contexto)
-      - Posts dominados por hashtags (engagement bait)
-      - Vagas de emprego (multi-idioma)
-      - Conteudo sensivel (luto, falecimento, demissao pessoal, saude mental)
-      - Promocoes explicitas (book/course/webinar launch, link-in-bio, codigos)
-      - Posts patrocinados / promovidos (badge LinkedIn)
-      - Enquetes (poll) — usuario deve votar, nao comentar
-      - Posts curtos demais para gerar contexto (signal-to-noise baixo)
-
-    NAO checa idioma — use is_text_supportable() em conjunto.
-    """
-    if not text:
-        return False
-
-    text_lower = text.lower()
-
-    # 1. Markers de HTML (badge "Promoted", "Poll") — checagem opcional
-    if post_element is not None:
-        try:
-            html_lower = (post_element.get_attribute("innerHTML") or "").lower()
-            # Patrocinado
-            for marker in _SPONSORED_MARKERS:
-                # tag pode aparecer como visivel ou label
-                if f">{marker}<" in html_lower or f'aria-label="{marker}' in html_lower:
-                    return False
-            # Poll (LinkedIn usa data-test-id="feed-shared-poll" ou classes especificas)
-            if "feed-shared-poll" in html_lower or "poll-results" in html_lower:
-                return False
-        except Exception:
-            pass
-
-    # 2. Tamanho de conteudo real (sem URLs/hashtags/mentions)
-    real_content = _strip_noise(text)
-    if len(real_content) < MIN_POST_CONTENT_CHARS:
-        return False
-
-    # 3. Dominado por URL: se o texto tem URL e o conteudo real eh raso
-    url_count = len(re.findall(r"https?://\S+|www\.\S+", text))
-    if url_count > 0 and len(real_content) < 280:
-        return False
-
-    # 4. Dominado por hashtags: razao hashtag/palavra alta indica spam
-    hashtags = re.findall(r"#\w+", text)
-    words = re.findall(r"\b\w+\b", text)
-    if len(hashtags) >= 8 or (words and len(hashtags) / max(len(words), 1) > 0.30):
-        return False
-
-    # 5. Job postings — nunca comentar
-    for kw in _JOB_POSTING_KEYWORDS:
-        if kw in text_lower:
-            return False
-
-    # 6. Conteudo sensivel — luto, demissao pessoal, saude mental
-    for kw in _SENSITIVE_KEYWORDS:
-        if kw in text_lower:
-            return False
-
-    # 7. Promocao explicita / vendas
-    for kw in _PROMO_KEYWORDS:
-        if kw in text_lower:
-            return False
-
-    # 8. Texto-marker de poll mesmo sem o post_element
-    for marker in _POLL_MARKERS:
-        if marker in text_lower:
-            return False
-
-    # 9. Patrocinio detectado via texto (algumas plataformas vazam "Promoted" no .text)
-    # Primeira linha curta = "Promoted" / "Sponsored" badge
-    first_line = text.strip().split("\n", 1)[0].lower().strip()
-    if first_line in ("promoted", "sponsored", "anúncio", "patrocinado"):
-        return False
-
-    return True
-
-
-def update_connection_status(profile_url, new_status):
-    """Atualiza o status de uma conexao na DB (pending/accepted/already_connected)."""
-    try:
-        profile_id = extract_profile_id(profile_url)
-        if not profile_id:
-            return False
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if new_status == "accepted":
-            c.execute(
-                "UPDATE connection_sent SET status = ?, accepted_at = ? WHERE profile_id = ?",
-                (new_status, ts, profile_id),
-            )
-        else:
-            c.execute(
-                "UPDATE connection_sent SET status = ? WHERE profile_id = ?",
-                (new_status, profile_id),
-            )
-        conn.commit()
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-def get_acceptance_rate(days=14):
-    """
-    Calcula taxa de aceitacao dos convites enviados nos ultimos N dias.
-    Retorna (rate_percent, sent_count, accepted_count).
-    Se rate < 30%, indica problema (alvos errados ou perfil pouco atraente).
-    """
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        # Total enviados (exclui ja conectados)
-        c.execute(
-            "SELECT COUNT(*) FROM connection_sent WHERE sent_at > ? AND status != 'already_connected'",
-            (cutoff,),
-        )
-        sent = c.fetchone()[0] or 0
-        # Aceitos
-        c.execute(
-            "SELECT COUNT(*) FROM connection_sent WHERE sent_at > ? AND status = 'accepted'",
-            (cutoff,),
-        )
-        accepted = c.fetchone()[0] or 0
-        conn.close()
-
-        rate = (accepted / sent * 100) if sent > 0 else 0
-        return rate, sent, accepted
-    except Exception:
-        return 0, 0, 0
-
-
-def is_likely_brazilian(name="", headline="", page_source=""):
-    """
-    Detecta perfis brasileiros para BLOQUEAR (foco: Europa/internacional, EN only).
-    Combina 3 sinais: idioma da headline, nome com padrão BR, e indicadores na página.
-    Retorna True se for provavelmente brasileiro (deve ser PULADO).
-    """
-    try:
-        # SINAL 1: Idioma da headline (mais forte)
-        if headline and len(headline) >= 8:
-            try:
-                lang = detect(headline)
-                if lang in ("pt", "es"):
-                    return True
-            except LangDetectException:
-                pass
-
-        # SINAL 2: Nome com padrões típicos brasileiros (sobrenomes comuns)
-        if name and name != "Unknown":
-            name_lower = name.lower()
-            br_name_patterns = [
-                " silva", " santos", " oliveira", " souza", " sousa",
-                " ferreira", " rodrigues", " alves", " pereira", " gomes",
-                " ribeiro", " costa", " carvalho", " almeida", " lima",
-                " araujo", " araújo", " barbosa", " cardoso", " mendes",
-                " junior", " filho", " neto", " jr.",
-            ]
-            for pattern in br_name_patterns:
-                if pattern in (" " + name_lower):
-                    return True
-
-        # SINAL 3: Indicadores na headline (palavras-chave PT-BR)
-        if headline:
-            h_lower = headline.lower()
-            br_keywords = [
-                "brasil", "brazil", "brasileir", "são paulo", "sao paulo",
-                "rio de janeiro", "belo horizonte", "porto alegre", "curitiba",
-                "engenheir", "desenvolved", "cientista de dados", "analista",
-                "gerente", "diretor de", "líder técnic",
-            ]
-            for kw in br_keywords:
-                if kw in h_lower:
-                    return True
-
-        # SINAL 4: Página com localização Brasil (busca rápida no HTML)
-        if page_source:
-            ps_lower = page_source.lower()
-            # Procura por "Brazil" em contexto de localização
-            br_location_patterns = [
-                ">brazil<", ">brasil<",
-                '"brazil"', '"brasil"',
-                "são paulo, brazil", "rio de janeiro, brazil",
-            ]
-            for pattern in br_location_patterns:
-                if pattern in ps_lower:
-                    return True
-
-        return False
-    except Exception:
         return False
 
 
@@ -1489,145 +975,6 @@ def register_post_commented(driver, post_element):
     except Exception:
         pass
     return False
-
-
-# =========================================================
-# Author cooldown: 1 comentario por autor a cada 7 dias
-# =========================================================
-
-AUTHOR_COMMENT_COOLDOWN_DAYS = 7
-
-
-def extract_post_author_url(post_element):
-    """
-    Extrai a URL do perfil do autor do post.
-    Tenta seletores conhecidos (header do post -> link do autor).
-    """
-    try:
-        selectors = [
-            "a.update-components-actor__meta-link",
-            "a.update-components-actor__container-link",
-            ".update-components-actor a[href*='/in/']",
-            ".feed-shared-actor a[href*='/in/']",
-            "a[data-test-app-aware-link][href*='/in/']",
-        ]
-        for sel in selectors:
-            try:
-                el = post_element.find_element(By.CSS_SELECTOR, sel)
-                href = el.get_attribute("href") or ""
-                if "/in/" in href:
-                    clean = href.split("?")[0].rstrip("/")
-                    return clean
-            except Exception:
-                continue
-        return None
-    except Exception:
-        return None
-
-
-def _author_id_from_url(author_url):
-    if not author_url or "/in/" not in author_url:
-        return None
-    return author_url.split("/in/")[-1].strip("/").split("/")[0]
-
-
-def was_author_commented_recently(author_url, days=AUTHOR_COMMENT_COOLDOWN_DAYS):
-    """True se ja comentamos em algum post deste autor nos ultimos N dias."""
-    aid = _author_id_from_url(author_url)
-    if not aid:
-        return False
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        c.execute(
-            "SELECT 1 FROM commented_authors WHERE author_id = ? AND commented_at > ? LIMIT 1",
-            (aid, cutoff),
-        )
-        hit = c.fetchone() is not None
-        conn.close()
-        return hit
-    except Exception:
-        return False
-
-
-def log_author_commented(author_url, post_url):
-    """Registra que comentamos em um post deste autor (timestamp now)."""
-    aid = _author_id_from_url(author_url)
-    if not aid:
-        return False
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        c.execute(
-            "INSERT INTO commented_authors (author_id, author_url, post_url, commented_at) VALUES (?, ?, ?, ?)",
-            (aid, author_url or "", post_url or "", ts),
-        )
-        conn.commit()
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-# =========================================================
-# Like-before-comment com deteccao de "ja curti" (aria-pressed=true)
-# =========================================================
-
-
-def is_post_liked(post_element):
-    """
-    Detecta se o post ja foi curtido (botao Like com aria-pressed=true).
-    """
-    try:
-        like_selectors = [
-            "button.react-button__trigger[aria-pressed='true']",
-            "button[aria-label*='Like'][aria-pressed='true']",
-            "button[aria-label*='Gostei'][aria-pressed='true']",
-            "button.reactions-react-button[aria-pressed='true']",
-        ]
-        for sel in like_selectors:
-            try:
-                el = post_element.find_element(By.CSS_SELECTOR, sel)
-                if el:
-                    return True
-            except Exception:
-                continue
-        # Fallback: aria-pressed em qualquer botao que indique reacao ativa
-        try:
-            buttons = post_element.find_elements(
-                By.CSS_SELECTOR, "button[aria-pressed='true']"
-            )
-            for b in buttons:
-                lbl = (b.get_attribute("aria-label") or "").lower()
-                if any(w in lbl for w in ("like", "gostei", "react", "reagi")):
-                    return True
-        except Exception:
-            pass
-        return False
-    except Exception:
-        return False
-
-
-def ensure_post_liked(driver, post_element, source="comment_prelude"):
-    """
-    Garante que o post esteja curtido ANTES de comentar (padrao humano).
-    NUNCA desliquea: se ja estiver curtido, retorna True sem fazer nada.
-    """
-    try:
-        if is_post_liked(post_element):
-            if VERBOSE:
-                print("    -> [LIKE] Post ja curtido, nao curte novamente.")
-            return True
-        perform_reaction_varied(driver, post_element, source)
-        # Pequena pausa humana entre like e comentario
-        human_sleep(1.5, 3.5)
-        return True
-    except Exception:
-        return False
 
 
 def create_csv(data, time_str):
@@ -1773,13 +1120,6 @@ def interact_with_feed_human(browser):
                         if perform_reaction_varied(browser, post, "feed"):
                             SESSION_FEED_LIKES += 1
 
-                    # SHARE LOGIC (NOVO - SSI Insights boost, baixa probabilidade)
-                    if random.random() < FEED_SHARE_PROB:
-                        try:
-                            share_post(browser, post)
-                        except Exception:
-                            pass
-
                     # COMMENT LOGIC
                     if random.random() < FEED_COMMENT_PROB:
                         try:
@@ -1797,14 +1137,10 @@ def interact_with_feed_human(browser):
                             )
                             text = text_el.text
 
-                            # Aceita EN + linguas europeias (DE/FR/ES/IT/NL/etc.)
-                            # Comentamos sempre em INGLES (lingua global tech).
-                            # PT (brasileiro) eh rejeitado.
-                            if FEED_ENGLISH_ONLY and not is_text_supportable(text):
+                            if FEED_ENGLISH_ONLY and not is_text_english(text):
                                 continue
 
-
-                            if is_post_worth_commenting(text, post):
+                            if len(text) > 20:
                                 comment = get_ai_comment(text)
                                 if perform_comment(browser, post, comment, "feed"):
                                     # Registra o post como comentado
@@ -1819,9 +1155,7 @@ def interact_with_feed_human(browser):
                 except Exception:
                     continue
 
-            browser.execute_script(
-                f"window.scrollBy(0, {random.randint(450, 950)});"
-            )
+            browser.execute_script("window.scrollBy(0, 800);")
             human_sleep(3, 5)
             scrolls += 1
 
@@ -2210,8 +1544,7 @@ def run_main_bot_logic(browser, sniper_targets=None):
                             commented_in_group.add(urn)
                         else:
                             text = post.text
-                            # Aceita EN + EU langs (DE/FR/ES/IT/NL/etc). PT rejeitado.
-                            if is_text_supportable(text) and is_post_worth_commenting(text, post):
+                            if len(text) > 20 and is_text_english(text):
                                 comment = get_ai_comment(text)
                                 if perform_comment(browser, post, comment, "group"):
                                     # Registra o post como comentado
@@ -2232,9 +1565,7 @@ def run_main_bot_logic(browser, sniper_targets=None):
                 f"    -> Scrollando grupo... ({scroll_attempts + 1}/{max_scroll_attempts})"
             )
             try:
-                browser.execute_script(
-                    f"window.scrollBy(0, {random.randint(500, 1000)});"
-                )
+                browser.execute_script("window.scrollBy(0, 800);")
                 human_sleep(5, 8)
                 gc.collect()  # Limpeza de memória crítica
             except Exception as e:
@@ -2392,7 +1723,7 @@ def run_main_bot_logic(browser, sniper_targets=None):
         except Exception as e:
             if "invalid session id" in str(e).lower():
                 print(f"\n!!! ERRO CRÍTICO DE SESSÃO: {e}")
-                #browser.quit()
+                browser.quit()
                 return  # Encerra para reiniciar
             print(f"Erro ao visitar {url}: {e}")
             continue
@@ -2984,19 +2315,6 @@ def connect_with_user(browser, name, headline, group_name):
     except Exception:
         pass
 
-    # ===== FILTRO 0 (CRÍTICO): BLOQUEAR BRASILEIROS =====
-    # Foco do bot: Europa/internacional EN only. Nunca conectar com perfis BR/PT.
-    try:
-        page_source_check = browser.page_source
-        if is_likely_brazilian(name, headline, page_source_check):
-            if VERBOSE:
-                print(
-                    f"    -> [SKIP BR] {name} parece ser brasileiro/PT. Foco é EU/internacional. Pulando..."
-                )
-            return False
-    except Exception:
-        pass
-
     # ===== NOVO: DETECÇÃO DE TOP VOICE =====
     # Perfis Top Voice têm estrutura HTML diferente e conexões podem não ser visíveis
     # Solução: relaxar filtro de conexões para Top Voices (usar followers como métrica)
@@ -3141,18 +2459,6 @@ def connect_with_user(browser, name, headline, group_name):
                         f"    -> [FILTER 2] {name} tem apenas {followers_count} seguidores (min: {min_followers_for_group}). Pulando..."
                     )
                     return False
-
-            # FILTRO 3a (NOVO - estrito): Aplica MAX_POSTING_DAYS_AGO consistentemente
-            # Se o perfil nao mostra atividade nos ultimos N dias = pulamos (exceto Top Voices)
-            if not is_top_voice:
-                try:
-                    if not is_profile_recently_active(page_source, MAX_POSTING_DAYS_AGO):
-                        print(
-                            f"    -> [FILTER 3a] {name} sem atividade ha >{MAX_POSTING_DAYS_AGO}d. Pulando..."
-                        )
-                        return False
-                except Exception:
-                    pass
 
             # FILTRO 3: Atividade dentro de 1 ano (Qualquer atividade recente é OK)
             # Aceita: 1d, 2w, 3m, "Posted X ago", "recently", etc
@@ -3744,25 +3050,19 @@ def click_connect_sequence(
 def run_extraction_process():
     if not os.path.exists(DRIVER_FILENAME):
         return
-    # NAO matar processos Edge aqui — mataria o browser principal e perderia login.
+    try:
+        os.system("taskkill /im msedge.exe /f >nul 2>&1")
+    except Exception:
+        pass
 
     opts = EdgeOptions()
 
     # --- [NOVO] ROTAÇÃO DE USER-AGENT E ANTI-FINGERPRINT ---
     user_agents = [
-        # Edge Windows (mais comuns)
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-        # Chrome Windows
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        # Chrome macOS
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        # Firefox Windows
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-        # Safari macOS
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
     ]
     agent = random.choice(user_agents)
     opts.add_argument(f"user-agent={agent}")
@@ -3881,86 +3181,15 @@ def get_ai_comment(post_text):
         return random.choice(safe_fallbacks)
 
     clean_text = post_text.replace("\n", " ").strip()[:800]
+    # Usando 'Act as' para orientar a persona
+    prompt = f"Act as a Data Scientist with the following expertise: '{AI_PERSONA}'.\nTask: Write a highly professional LinkedIn comment (35-55 words) on: '{clean_text}'.\nTone: Insightful, professional. Do NOT repeat the persona's description in the final comment. No hashtags."
 
-    # === SISTEMA DE VARIAÇÃO DE ESTILO (parece humano natural) ===
-    comment_styles = [
-        {
-            "name": "brief_reaction",
-            "weight": 0.30,
-            "instruction": (
-                "Write a VERY SHORT, genuine 1-sentence reaction (8-18 words). "
-                "No fluff, no 'great post'. Sound like a quick human reply."
-            ),
-            "max_len": 200,
-        },
-        {
-            "name": "insightful_question",
-            "weight": 0.25,
-            "instruction": (
-                "Write a 1-2 sentence comment (20-40 words) ending with a genuine "
-                "question that shows curiosity. Avoid generic questions."
-            ),
-            "max_len": 350,
-        },
-        {
-            "name": "experience_share",
-            "weight": 0.20,
-            "instruction": (
-                "Write a 2-3 sentence comment (40-70 words) briefly sharing related "
-                "professional experience. Start naturally with 'In my experience...', "
-                "'I've seen this...', 'We hit this same...' or similar."
-            ),
-            "max_len": 500,
-        },
-        {
-            "name": "agreement_add",
-            "weight": 0.15,
-            "instruction": (
-                "Write a 2 sentence comment (30-55 words) agreeing and adding ONE "
-                "specific new insight not mentioned in the original post."
-            ),
-            "max_len": 400,
-        },
-        {
-            "name": "data_perspective",
-            "weight": 0.10,
-            "instruction": (
-                "Write a 2 sentence comment (30-60 words) bringing a data/analytics "
-                "perspective. Reference a concrete pattern or metric. No buzzwords."
-            ),
-            "max_len": 450,
-        },
-    ]
-
-    weights = [s["weight"] for s in comment_styles]
-    style = random.choices(comment_styles, weights=weights, k=1)[0]
-
-    # Emojis: apenas BMP-safe (resto é removido por call_robust_ai por causa do EdgeDriver)
-    use_emoji = random.random() < 0.25
-    emoji_hint = (
-        " Optionally include 1 single relevant simple emoji like: ⚡ ✨ ⭐ ✅ (only if it fits naturally, never more than one)."
-        if use_emoji
-        else " Do NOT use any emoji."
-    )
-
-    prompt = (
-        f"You are a Senior Data Scientist commenting on a LinkedIn post.\n"
-        f"Post: '{clean_text}'\n\n"
-        f"STYLE INSTRUCTION: {style['instruction']}\n"
-        f"RULES: Professional tone. NO hashtags. NO 'Great post' / 'Excellent post' / 'Thanks for sharing'. "
-        f"Do NOT mention you are a data scientist explicitly. Write in English.{emoji_hint}\n"
-        f"Output ONLY the comment text, nothing else."
-    )
-
-    response = call_robust_ai(prompt, style["max_len"])
+    response = call_robust_ai(prompt, 800)
 
     if not response:
         if VERBOSE:
-            print(f"    [IA FAIL/{style['name']}] Usando frase de seguranca.")
+            print("    [IA FAIL] Usando frase de segurança.")
         return random.choice(safe_fallbacks)
-
-    if VERBOSE:
-        print(f"    [IA STYLE] {style['name']} ({len(response.split())} words)")
     return response
 
 
@@ -4121,30 +3350,17 @@ def check_is_top_profile(driver):
         pass
 
     # 3. VERIFICAÇÃO DE HEADLINE (Alvo Técnico) - USANDO NOVA LISTA
-    headline_text = ""
     try:
-        headline_text = driver.find_element(
+        headline = driver.find_element(
             By.XPATH,
             "//div[contains(@class, 'text-body-medium') and contains(@class, 'break-words')]",
         ).text.lower()
 
         # Usa a variável global HIGH_VALUE_KEYWORDS
-        if any(kw in headline_text for kw in HIGH_VALUE_KEYWORDS):
+        if any(kw in headline for kw in HIGH_VALUE_KEYWORDS):
             if VERBOSE:
                 print(
-                    f"    -> [Top Profile] Motivo: Headline de Alto Valor Técnico ({headline_text[:20]}...)."
-                )
-            return True
-    except Exception:
-        pass
-
-    # 4. VERIFICAÇÃO EU TOP VOICE WEIGHT (NOVO - prioriza europeus)
-    try:
-        eu_weight = check_eu_top_profile_weight(driver, headline=headline_text)
-        if eu_weight >= 2.0:
-            if VERBOSE:
-                print(
-                    f"    -> [Top Profile] Motivo: EU Weight {eu_weight:.1f} (Europa/UK/DE)."
+                    f"    -> [Top Profile] Motivo: Headline de Alto Valor Técnico ({headline[:20]}...)."
                 )
             return True
     except Exception:
@@ -4172,780 +3388,8 @@ def endorse_skills(driver):
     return False
 
 
-# ==============================================================================
-# 🚀 NOVAS FUNÇÕES SSI BOOST (People / Insights / Brand / Relationships)
-# ==============================================================================
-
-
-def check_eu_top_profile_weight(driver, headline=""):
-    """
-    Calcula peso de prioridade do perfil (1.0 normal, ate 3.0 EU Top Voice).
-    Sinais: localizacao europeia (UK/DE/FR/NL/etc.), badge Top Voice, followers >5K.
-    Cuidado: Portugal removido para evitar BR/PT contamination.
-    """
-    weight = 1.0
-    try:
-        page_source = driver.page_source.lower()
-
-        # Sinal 1: Localizacao europeia (peso forte)
-        eu_locations = [
-            "london", "manchester", "birmingham", "edinburgh", "cambridge",
-            "united kingdom", "england", "scotland", "ireland", "dublin",
-            "berlin", "munich", "münchen", "hamburg", "frankfurt", "köln",
-            "germany", "deutschland",
-            "paris", "lyon", "marseille", "france",
-            "madrid", "barcelona", "valencia", "sevilla", "spain", "españa",
-            "amsterdam", "rotterdam", "the hague", "utrecht", "netherlands",
-            "milan", "milano", "rome", "roma", "italy", "italia",
-            "stockholm", "göteborg", "sweden", "oslo", "norway",
-            "copenhagen", "denmark", "helsinki", "finland",
-            "zurich", "geneva", "switzerland", "vienna", "wien", "austria",
-            "brussels", "belgium", "luxembourg",
-            "warsaw", "poland", "prague", "czech",
-        ]
-        if any(loc in page_source for loc in eu_locations):
-            weight *= 2.0
-
-        # Sinal 2: Top Voice badge
-        if "top voice" in page_source or "pv-top-voice-badge" in page_source:
-            weight *= 1.5
-
-        # Sinal 3: Followers altos
-        try:
-            f_match = re.search(r"([\d,]+)\s*followers?", page_source, re.IGNORECASE)
-            if f_match:
-                followers = int(f_match.group(1).replace(",", ""))
-                if followers > 10000:
-                    weight *= 1.3
-                elif followers > 5000:
-                    weight *= 1.15
-        except Exception:
-            pass
-
-        # Sinal 4: Headline tem cargo de lideranca/senioridade (boost extra)
-        if headline:
-            h_lower = headline.lower()
-            senior_signals = [
-                "chief", "cto", "cdo", "ceo", "vp", "head of",
-                "director", "principal", "staff", "lead",
-            ]
-            if any(s in h_lower for s in senior_signals):
-                weight *= 1.2
-    except Exception:
-        pass
-
-    return weight
-
-
-def smart_dwell_time(driver, base_min=4, base_max=8):
-    """
-    Tempo de leitura/scroll variavel baseado em peso do perfil.
-    EU Top Voices recebem 2x mais tempo (mais natural - voce leria mais).
-    """
-    try:
-        weight = check_eu_top_profile_weight(driver)
-        multiplier = 1.0
-        if weight >= 3.0:
-            multiplier = 2.5  # EU Top Voice
-        elif weight >= 2.0:
-            multiplier = 1.7  # EU normal
-        elif weight >= 1.5:
-            multiplier = 1.3  # Top Voice nao-EU
-
-        human_sleep(base_min * multiplier, base_max * multiplier)
-        if VERBOSE and multiplier > 1.0:
-            print(f"    -> [DWELL] Tempo de leitura ajustado x{multiplier:.1f} (weight={weight:.1f})")
-    except Exception:
-        human_sleep(base_min, base_max)
-
-
-def is_profile_recently_active(page_source, max_days=30):
-    """
-    Aplica filtro MAX_POSTING_DAYS_AGO de forma consistente.
-    Verifica se o perfil tem atividade recente baseada em padroes de tempo.
-    """
-    if not page_source:
-        return True  # Sem info = assume ok
-
-    page_lower = page_source.lower()
-    # Sinais de atividade recente (qualquer um destes = OK)
-    recent_patterns = [
-        r"\d+\s*hours?\s*ago", r"\d+\s*hr\s*ago",
-        r"\d+\s*days?\s*ago", r"\d+\s*d\s*ago",
-        r"\d+\s*weeks?\s*ago", r"\d+\s*w\s*ago",
-        r"posted\s*\d+[dwh]", r"posted\s*today", r"posted\s*yesterday",
-        r"this\s*week", r"last\s*week",
-    ]
-    for pattern in recent_patterns:
-        if re.search(pattern, page_lower):
-            # Encontrou referencia de tempo recente
-            return True
-
-    # Sinais de atividade ANTIGA (rejeicao explicita)
-    old_patterns = [
-        r"\d+\s*years?\s*ago",
-        r"posted\s*\d+\s*years?",
-        r"\d+\s*months?\s*ago",  # 1+ meses pode ser muito tempo
-    ]
-    months_match = re.search(r"(\d+)\s*months?\s*ago", page_lower)
-    if months_match:
-        months = int(months_match.group(1))
-        max_months = max_days // 30
-        if months > max_months:
-            return False
-
-    for pattern in old_patterns[:-1]:  # exclui months (ja tratado)
-        if re.search(pattern, page_lower):
-            return False
-
-    return True
-
-
-def detect_accepted_connections(browser):
-    """
-    Compara convites pendentes no DB com a lista atual de conexoes do LinkedIn.
-    Marca como 'accepted' os que apareceram na lista (tracking essencial para SSI).
-    """
-    print("\n🔍 [TRACKING] Detectando convites aceitos...")
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        c.execute(
-            "SELECT profile_id, profile_url, name FROM connection_sent WHERE status = 'pending'"
-        )
-        pending = c.fetchall()
-        conn.close()
-
-        if not pending:
-            print("    -> Nenhum convite pendente.")
-            return 0
-
-        pending_map = {row[0]: row for row in pending}
-
-        # Vai para lista de conexoes
-        browser.get("https://www.linkedin.com/mynetwork/invite-connect/connections/")
-        human_sleep(8, 12)
-
-        # Scroll agressivo (carrega top ~100 conexoes mais recentes)
-        for _ in range(5):
-            browser.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            human_sleep(2, 4)
-
-        soup = BeautifulSoup(browser.page_source, "html.parser")
-        accepted_ids = set()
-        for link in soup.find_all("a", href=True):
-            href = link["href"]
-            if "/in/" in href:
-                clean = href.split("?")[0]
-                if clean.startswith("/in/"):
-                    clean = "https://www.linkedin.com" + clean
-                pid = extract_profile_id(clean)
-                if pid:
-                    accepted_ids.add(pid)
-
-        marked = 0
-        for pid, (_, url, name) in pending_map.items():
-            if pid in accepted_ids:
-                if update_connection_status(url, "accepted"):
-                    marked += 1
-                    if VERBOSE:
-                        print(f"    -> [ACCEPTED] {name[:30]}")
-
-        print(f"🔍 [TRACKING] {marked} convites detectados como aceitos.")
-        return marked
-    except Exception as e:
-        print(f"    -> [TRACKING ERROR] {str(e)[:80]}")
-        return 0
-
-
-def engage_with_recent_connections_posts(browser, max_engagements=3):
-    """
-    [SSI RELATIONSHIPS] Curte/comenta em posts das conexoes recentes (aceitas).
-    Pilar mais subutilizado: interagir COM suas conexoes (nao so adicionar).
-    """
-    print(f"\n💬 [SSI RELATIONSHIPS] Engajando posts de conexoes (max {max_engagements})...")
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        c = conn.cursor()
-        cutoff = (datetime.datetime.now() - datetime.timedelta(days=45)).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        # Prioriza conexoes aceitas; fallback para pending recentes
-        c.execute(
-            """SELECT profile_url, name FROM connection_sent
-               WHERE sent_at > ? AND status IN ('accepted','pending')
-               ORDER BY
-                 CASE status WHEN 'accepted' THEN 0 ELSE 1 END,
-                 sent_at DESC
-               LIMIT 25""",
-            (cutoff,),
-        )
-        recent = c.fetchall()
-        conn.close()
-
-        if not recent:
-            print("    -> Nenhuma conexao recente para engajar.")
-            return
-
-        random.shuffle(recent)
-        engaged = 0
-
-        for profile_url, name in recent:
-            if engaged >= max_engagements:
-                break
-
-            try:
-                activity_url = profile_url.rstrip("/") + "/recent-activity/all/"
-                browser.get(activity_url)
-                human_sleep(6, 10)
-
-                # Filtro BR
-                try:
-                    if is_likely_brazilian(name=name, page_source=browser.page_source):
-                        continue
-                except Exception:
-                    pass
-
-                # Pega o primeiro post visivel
-                posts = browser.find_elements(By.CLASS_NAME, "feed-shared-update-v2")
-                if not posts:
-                    continue
-
-                post = posts[0]
-                try:
-                    browser.execute_script(
-                        "arguments[0].scrollIntoView({block: 'center'});", post
-                    )
-                except Exception:
-                    continue
-                human_sleep(2, 4)
-
-                # Like sempre (sinal Relationships)
-                try:
-                    perform_reaction_varied(browser, post, "recent_conn")
-                    if VERBOSE:
-                        print(f"    -> [REL LIKE] {name[:30]}")
-                except Exception:
-                    pass
-
-                # 35% das vezes tambem comenta
-                if random.random() < 0.35:
-                    try:
-                        text = post.text
-                        if is_text_supportable(text) and is_post_worth_commenting(text, post):
-                            comment = get_ai_comment(text)
-                            if perform_comment(browser, post, comment, "recent_conn"):
-                                print(f"    -> [REL COMMENT] {name[:30]}")
-                    except Exception:
-                        pass
-
-                engaged += 1
-                human_sleep(4, 8)
-            except Exception:
-                continue
-
-        print(f"💬 [SSI RELATIONSHIPS] Engajou {engaged} conexoes recentes.")
-    except Exception as e:
-        print(f"    -> [ENGAGE ERROR] {str(e)[:80]}")
-
-
-def engage_with_newsletters(browser, max_likes=2):
-    """
-    [SSI INSIGHTS] Curte posts de Newsletters do LinkedIn (alto peso algoritmico).
-    Newsletters sao um dos formatos mais valorizados pelo algoritmo do feed.
-    """
-    print(f"\n📰 [SSI NEWSLETTER] Engajando com newsletters (max {max_likes} likes)...")
-    try:
-        # Busca por newsletters de tech/data
-        topics = ["data-science", "artificial-intelligence", "machine-learning", "tech"]
-        topic = random.choice(topics)
-        browser.get(
-            f"https://www.linkedin.com/search/results/content/?keywords=newsletter%20{topic}&origin=GLOBAL_SEARCH_HEADER"
-        )
-        human_sleep(7, 11)
-
-        # Scroll para carregar
-        for _ in range(2):
-            browser.execute_script(f"window.scrollBy(0, {random.randint(400, 800)});")
-            human_sleep(2, 4)
-
-        # Procura posts de newsletter (tem indicacao especifica)
-        posts = browser.find_elements(By.CLASS_NAME, "feed-shared-update-v2")
-        liked = 0
-
-        for post in posts[:10]:
-            if liked >= max_likes:
-                break
-            try:
-                # Verifica se eh post de newsletter (tem badge ou texto)
-                post_text = post.text.lower()
-                is_newsletter = (
-                    "newsletter" in post_text
-                    or "subscribe" in post_text
-                    or "weekly digest" in post_text
-                )
-                if not is_newsletter:
-                    continue
-
-                # Filtro idioma + BR
-                if not is_text_supportable(post.text):
-                    continue
-
-                browser.execute_script(
-                    "arguments[0].scrollIntoView({block: 'center'});", post
-                )
-                human_sleep(2, 4)
-
-                if perform_reaction_varied(browser, post, "newsletter"):
-                    liked += 1
-                    print(f"    -> [NEWSLETTER LIKE] +1 ({liked}/{max_likes})")
-                    human_sleep(3, 6)
-            except Exception:
-                continue
-
-        print(f"📰 [SSI NEWSLETTER] Concluido. Likes: {liked}")
-    except Exception as e:
-        print(f"    -> [NEWSLETTER ERROR] {str(e)[:80]}")
-
-
-def publish_daily_micro_post(browser):
-    """
-    [SSI BRAND] Publica um micro-post diario (1 linha + link).
-    Risco MEDIO mas alto impacto no pilar Brand do SSI.
-    So publica 1 vez por dia (verificacao via DB de timestamp).
-    """
-    # Verifica se ja postou hoje
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
-    flag_file = os.path.join(DATA_DIR, f"posted_{today}.flag")
-    if os.path.exists(flag_file):
-        if VERBOSE:
-            print("    -> [POST] Ja postou hoje, pulando.")
-        return
-
-    print("\n✍️  [SSI BRAND] Publicando micro-post diario...")
-
-    # Bank de micro-posts (1 linha + 1 link educativo)
-    micro_posts = [
-        "Reading this on real-time feature stores in production. Worth a look for anyone doing ML at scale: https://docs.featurestore.org/",
-        "Solid breakdown of Databricks vs Snowflake for ML workloads — interesting cost comparison: https://www.databricks.com/blog/",
-        "Quick read on data quality patterns at Netflix scale: https://netflixtechblog.com/",
-        "Good thread on LLM evals beyond accuracy — practical metrics matter: https://huyenchip.com/",
-        "Practical guide to ML observability in production — often overlooked: https://eugeneyan.com/",
-    ]
-    post_text = random.choice(micro_posts)
-
-    try:
-        browser.get("https://www.linkedin.com/feed/")
-        human_sleep(6, 10)
-
-        # Click no botao "Start a post"
-        try:
-            start_btn = WebDriverWait(browser, 10).until(
-                EC.element_to_be_clickable(
-                    (By.XPATH, "//button[contains(., 'Start a post') or contains(@aria-label, 'Start a post')]")
-                )
-            )
-            browser.execute_script("arguments[0].click();", start_btn)
-            human_sleep(3, 5)
-        except Exception:
-            print("    -> [POST FAIL] Botao 'Start a post' nao encontrado.")
-            return
-
-        # Aguarda editor abrir
-        try:
-            editor = WebDriverWait(browser, 8).until(
-                EC.presence_of_element_located(
-                    (By.XPATH, "//div[@role='textbox' and @contenteditable='true']")
-                )
-            )
-            editor.click()
-            human_sleep(1, 2)
-            human_type(editor, post_text)
-            human_sleep(3, 5)
-        except Exception as e:
-            print(f"    -> [POST FAIL] Editor nao abriu: {str(e)[:60]}")
-            return
-
-        # Click no Post (botao final)
-        try:
-            post_btn = WebDriverWait(browser, 8).until(
-                EC.element_to_be_clickable(
-                    (By.XPATH, "//button[contains(@class, 'share-actions__primary-action') or (contains(., 'Post') and not(contains(@aria-label, 'Cancel')))]")
-                )
-            )
-            browser.execute_script("arguments[0].click();", post_btn)
-            human_sleep(5, 8)
-            print(f"    -> [POST OK] Publicado: {post_text[:60]}...")
-            # Marca como ja postado hoje
-            with open(flag_file, "w") as f:
-                f.write(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        except Exception as e:
-            print(f"    -> [POST FAIL] Botao Post nao encontrado: {str(e)[:60]}")
-            try:
-                browser.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-            except Exception:
-                pass
-
-    except Exception as e:
-        print(f"    -> [POST ERROR] {str(e)[:80]}")
-
-
-def visit_people_you_may_know(browser, max_visits=5):
-    """
-    [SSI PEOPLE] Visita perfis sugeridos pelo LinkedIn na seção 'My Network'.
-    Visitar perfis relevantes (sem necessariamente conectar) é sinal forte
-    para o pilar 'Find the Right People' do SSI.
-    """
-    print(f"\n👥 [SSI PEOPLE] Visitando 'People You May Know' (max {max_visits})...")
-    try:
-        browser.get("https://www.linkedin.com/mynetwork/")
-        human_sleep(8, 12)
-
-        # Scroll para carregar mais sugestões
-        for _ in range(2):
-            browser.execute_script(
-                f"window.scrollBy(0, {random.randint(400, 750)});"
-            )
-            human_sleep(2, 4)
-
-        # Extrai links via BeautifulSoup (mais robusto que XPath dinâmico)
-        soup = BeautifulSoup(browser.page_source, "html.parser")
-        all_links = soup.find_all("a", href=True)
-
-        profile_urls = []
-        seen = set()
-        for link in all_links:
-            href = link["href"]
-            if "/in/" in href and "miniProfile" not in href:
-                clean = href.split("?")[0]
-                if not clean.startswith("http"):
-                    clean = "https://www.linkedin.com" + clean
-                slug = clean.split("/in/")[-1].strip("/")
-                # Filtra lixo (ACo, ACw são IDs internos)
-                if slug and not slug.startswith("ACo") and not slug.startswith("ACw"):
-                    if clean not in seen:
-                        seen.add(clean)
-                        profile_urls.append(clean)
-                        if len(profile_urls) >= max_visits * 2:
-                            break
-
-        main_window = browser.current_window_handle
-        visited = 0
-
-        for url in profile_urls[: max_visits * 2]:
-            if visited >= max_visits:
-                break
-            # Skip se já processado
-            if is_connection_sent(url) or is_already_connected(url):
-                continue
-
-            try:
-                browser.execute_script("window.open('');")
-                browser.switch_to.window(browser.window_handles[-1])
-                browser.get(url)
-                human_sleep(5, 9)
-
-                # Filtro BR: pula brasileiros
-                try:
-                    page_src = browser.page_source
-                    if is_likely_brazilian(page_source=page_src):
-                        browser.close()
-                        browser.switch_to.window(main_window)
-                        continue
-                except Exception:
-                    pass
-
-                human_reading_behavior(browser)
-                browser.close()
-                browser.switch_to.window(main_window)
-                visited += 1
-                print(f"    -> [PEOPLE] Visitado {visited}/{max_visits}")
-            except Exception:
-                try:
-                    if browser.current_window_handle != main_window:
-                        browser.close()
-                        browser.switch_to.window(main_window)
-                except Exception:
-                    pass
-                continue
-
-        print(f"👥 [SSI PEOPLE] Concluído. Visitados: {visited}")
-    except Exception as e:
-        print(f"    -> [PEOPLE ERROR] {str(e)[:80]}")
-
-
-def share_post(browser, post):
-    """
-    [SSI INSIGHTS] Compartilha/reposta um post — sinal forte do pilar Insights.
-    Modo 'Repost' (sem texto) para não cair em modo perigoso de auto-publicação.
-    """
-    try:
-        # Procura botão Share/Repost dentro do post
-        share_btn = None
-        for sel in [
-            ".//button[contains(@aria-label, 'Share') or contains(@aria-label, 'Repost') or contains(@aria-label, 'Compartilhar')]",
-        ]:
-            try:
-                btn = post.find_element(By.XPATH, sel)
-                if btn and btn.is_displayed():
-                    share_btn = btn
-                    break
-            except Exception:
-                continue
-
-        if not share_btn:
-            return False
-
-        browser.execute_script(
-            "arguments[0].scrollIntoView({block: 'center'});", share_btn
-        )
-        human_sleep(1, 2)
-        browser.execute_script("arguments[0].click();", share_btn)
-        human_sleep(2, 4)
-
-        # Procura opção 'Repost' (sem adicionar texto = seguro)
-        repost_selectors = [
-            "//div[@role='button' and (contains(@aria-label, 'Repost') or contains(., 'Repost'))]",
-            "//button[contains(., 'Repost')]",
-            "//div[@role='button' and (contains(@aria-label, 'Share now') or contains(., 'Share now'))]",
-        ]
-        for sel in repost_selectors:
-            try:
-                btn = WebDriverWait(browser, 3).until(
-                    EC.element_to_be_clickable((By.XPATH, sel))
-                )
-                browser.execute_script("arguments[0].click();", btn)
-                print("    -> [SSI INSIGHTS] Post repostado.")
-                human_sleep(4, 7)
-                return True
-            except Exception:
-                continue
-
-        # Se não achou, fecha o modal pra não atrapalhar
-        try:
-            browser.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-        except Exception:
-            pass
-        return False
-    except Exception:
-        return False
-
-
-def browse_linkedin_articles(browser):
-    """
-    [SSI BRAND] Navega em artigos do LinkedIn Pulse — sinal para o pilar Brand.
-    Mostra ao algoritmo que voce consome conteudo relevante da area.
-    """
-    try:
-        topics = [
-            "machine-learning", "artificial-intelligence", "data-science",
-            "python", "big-data", "cloud-computing", "deep-learning",
-        ]
-        topic = random.choice(topics)
-        url = f"https://www.linkedin.com/pulse/topic/{topic}"
-        print(f"\n📰 [SSI BRAND] Navegando em artigos: {topic}")
-
-        browser.get(url)
-        human_sleep(6, 10)
-        human_reading_behavior(browser)
-
-        # Tenta abrir 1 artigo aleatorio (so leitura, sem like/comment)
-        try:
-            articles = browser.find_elements(By.XPATH, "//a[contains(@href, '/pulse/')]")
-            valid = [
-                a for a in articles
-                if a.get_attribute("href") and "/pulse/" in (a.get_attribute("href") or "")
-            ][:8]
-            if valid:
-                article = random.choice(valid)
-                article_url = article.get_attribute("href")
-                browser.get(article_url)
-                human_sleep(10, 18)
-                human_reading_behavior(browser)
-                print("    -> [SSI BRAND] Artigo lido.")
-        except Exception:
-            pass
-    except Exception as e:
-        print(f"    -> [ARTICLES ERROR] {str(e)[:80]}")
-
-
-def send_welcome_message_to_recent_connections(browser, max_messages=1):
-    """
-    [SSI RELATIONSHIPS] Envia welcome msg para conexoes recentes (EN only, nao-BR).
-    Foco: Europa/Internacional. Maximo 1-2 por sessao para nao parecer spam.
-    """
-    print(f"\n🤝 [SSI RELATIONSHIPS] Welcome msg para conexoes recentes (max {max_messages})...")
-    try:
-        browser.get("https://www.linkedin.com/mynetwork/invite-connect/connections/")
-        human_sleep(8, 12)
-
-        # Scroll para carregar
-        browser.execute_script(f"window.scrollBy(0, {random.randint(300, 600)});")
-        human_sleep(3, 5)
-
-        # Pega cards de conexoes (mais recentes ficam no topo)
-        cards = browser.find_elements(
-            By.XPATH, "//li[contains(@class, 'mn-connection-card') or contains(@class, 'connection-card')]"
-        )
-
-        messages_sent = 0
-        for card in cards[:10]:
-            if messages_sent >= max_messages:
-                break
-
-            try:
-                # Extrai nome
-                name = "there"
-                try:
-                    name_el = card.find_element(
-                        By.XPATH, ".//span[contains(@class, 'name') or contains(@class, 'card__name')]"
-                    )
-                    name = name_el.text.strip()
-                except Exception:
-                    pass
-
-                # Extrai headline
-                headline = ""
-                try:
-                    h_el = card.find_element(
-                        By.XPATH, ".//span[contains(@class, 'occupation') or contains(@class, 'card__occupation')]"
-                    )
-                    headline = h_el.text.strip()
-                except Exception:
-                    pass
-
-                # FILTRO BR: nunca enviar para brasileiro
-                if is_likely_brazilian(name=name, headline=headline):
-                    if VERBOSE:
-                        print(f"    -> [SKIP BR] {name[:30]} parece BR. Pulando...")
-                    continue
-
-                # Click no botao Message do card
-                try:
-                    msg_btn = card.find_element(
-                        By.XPATH, ".//button[contains(@aria-label, 'Message')]"
-                    )
-                except Exception:
-                    continue
-
-                browser.execute_script(
-                    "arguments[0].scrollIntoView({block: 'center'});", msg_btn
-                )
-                human_sleep(1, 2)
-                browser.execute_script("arguments[0].click();", msg_btn)
-                human_sleep(3, 5)
-
-                # Aguarda caixa de mensagem
-                try:
-                    msg_box = WebDriverWait(browser, 5).until(
-                        EC.presence_of_element_located(
-                            (By.XPATH, "//div[@role='textbox' and (contains(@aria-label, 'message') or contains(@aria-label, 'Message'))]")
-                        )
-                    )
-                except Exception:
-                    if VERBOSE:
-                        print(f"    -> [SKIP] Caixa de msg nao apareceu para {name}")
-                    continue
-
-                first = name.split()[0] if name and name != "there" else "there"
-                welcome_msgs = [
-                    f"Hi {first}, thanks for connecting! Looking forward to exchanging insights.",
-                    f"Hi {first}, glad we connected. Always good to meet fellow data professionals.",
-                    f"Hi {first}, thanks for accepting. Looking forward to staying in touch.",
-                    f"Hey {first}, great to connect. Happy to swap notes on data/ML anytime.",
-                ]
-                welcome_msg = random.choice(welcome_msgs)
-
-                human_type(msg_box, welcome_msg)
-                human_sleep(2, 4)
-
-                # Click no botao Send
-                try:
-                    send_btn = browser.find_element(
-                        By.XPATH, "//button[contains(@class, 'msg-form__send-button') or contains(@aria-label, 'Send')]"
-                    )
-                    if send_btn.is_displayed():
-                        browser.execute_script("arguments[0].click();", send_btn)
-                        print(f"    -> [WELCOME OK] Msg enviada para {name[:30]}")
-                        messages_sent += 1
-                        human_sleep(6, 10)
-                except Exception:
-                    # Fallback: Ctrl+Enter
-                    try:
-                        ActionChains(browser).key_down(Keys.CONTROL).send_keys(
-                            Keys.RETURN
-                        ).key_up(Keys.CONTROL).perform()
-                        print(f"    -> [WELCOME OK kbd] Msg enviada para {name[:30]}")
-                        messages_sent += 1
-                        human_sleep(6, 10)
-                    except Exception:
-                        pass
-
-                # Fecha modal se aberto
-                try:
-                    browser.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-                    human_sleep(1, 2)
-                except Exception:
-                    pass
-
-            except Exception as e:
-                if VERBOSE:
-                    print(f"    -> [WELCOME ERROR] {str(e)[:60]}")
-                continue
-
-        print(f"🤝 [SSI RELATIONSHIPS] Enviadas {messages_sent} welcome msgs.")
-    except Exception as e:
-        print(f"    -> [WELCOME ERROR] {str(e)[:80]}")
-
-
-def choose_reaction_by_content(post_text):
-    """
-    Escolhe reação contextualmente baseada no conteúdo do post.
-    Mais humano que random: humano reage diferente a anúncios vs análises.
-    """
-    if not post_text:
-        return "like"
-
-    text_lower = post_text.lower()
-
-    celebrate_keywords = [
-        "promoted", "promotion", "new job", "joining", "new role",
-        "excited to share", "thrilled to announce", "anniversary",
-        "milestone", "graduated", "first day", "starting at",
-    ]
-    if any(w in text_lower for w in celebrate_keywords):
-        return "celebrate"
-
-    insight_keywords = [
-        "data", "research", "study", "insight", "analysis", "paper",
-        "machine learning", " ai ", "algorithm", "model", "results show",
-        "experiment", "benchmark", "findings", "metric", "dataset",
-    ]
-    if any(w in text_lower for w in insight_keywords):
-        return "insightful"
-
-    love_keywords = ["love this", "amazing team", "incredible journey", "so grateful"]
-    if any(w in text_lower for w in love_keywords):
-        return "love"
-
-    support_keywords = ["challenging", "difficult time", "tough times", "loss", "layoff", "let go"]
-    if any(w in text_lower for w in support_keywords):
-        return "support"
-
-    return "like"
-
-
 def perform_reaction_varied(driver, post, source="group"):
-    available_reactions_names = ["like", "insightful", "celebrate", "love", "support"]
-
-    # Determina reação preferida pelo conteúdo (mais humano)
-    preferred_reaction = "like"
-    try:
-        post_text = post.text[:600]
-        preferred_reaction = choose_reaction_by_content(post_text)
-    except Exception:
-        pass
-
+    available_reactions_names = ["like", "insightful", "celebrate", "love"]
     try:
         btn = post.find_element(
             By.CSS_SELECTOR, "button[aria-label*='Like'], button[aria-label*='Gostei']"
@@ -4965,16 +3409,8 @@ def perform_reaction_varied(driver, post, source="group"):
                     valid_reactions.append(r)
 
             if valid_reactions:
-                # Tenta primeiro a reação contextual; se não achar, fallback random
-                contextual_btn = None
-                if preferred_reaction != "like":
-                    for r in valid_reactions:
-                        if preferred_reaction in (r.get_attribute("aria-label") or "").lower():
-                            contextual_btn = r
-                            break
-                chosen_reaction = contextual_btn or random.choice(valid_reactions)
                 ActionChains(driver).move_to_element(
-                    chosen_reaction
+                    random.choice(valid_reactions)
                 ).click().perform()
                 print("    -> Reacted (Emotion).")
             else:
@@ -4988,46 +3424,7 @@ def perform_reaction_varied(driver, post, source="group"):
 
 
 def perform_comment(driver, post, text, source="group"):
-    # Gate humano: respeita cooldown entre comentarios para nao comentar em rajada.
-    if not can_comment_now():
-        if VERBOSE:
-            print("    -> [COOLDOWN] Pulando comentario (gap entre comentarios nao atingido).")
-        return False
-
-    # Gate de autor: nao comentar em mais de 1 post do mesmo autor por semana.
-    author_url = extract_post_author_url(post)
-    if author_url and was_author_commented_recently(author_url):
-        if VERBOSE:
-            print(f"    -> [AUTHOR COOLDOWN] Ja comentei em post deste autor nos ultimos {AUTHOR_COMMENT_COOLDOWN_DAYS}d. Pulando.")
-        return False
-
-    # Gate de post: nao comentar 2x no mesmo post (defesa extra alem dos call-sites).
     try:
-        if is_post_already_commented(driver, post):
-            if VERBOSE:
-                print("    -> [POST DEDUP] Post ja comentado anteriormente. Pulando.")
-            return False
-    except Exception:
-        pass
-
-    try:
-        # Antes de comentar: "ler" o post — tempo proporcional ao tamanho.
-        try:
-            post_text = post.text or ""
-        except Exception:
-            post_text = ""
-        if post_text:
-            read_t = reading_time_for_text(post_text)
-            if VERBOSE:
-                print(f"    -> [READ] Lendo post por {read_t:.1f}s antes de comentar...")
-            time.sleep(read_t)
-
-        # Padrao humano: curtir ANTES de comentar (se ainda nao curtiu).
-        try:
-            ensure_post_liked(driver, post)
-        except Exception:
-            pass
-
         # Try multiple selectors for comment button
         comment_button_selectors = [
             "button[aria-label*='Comment']",
@@ -5263,13 +3660,6 @@ def perform_comment(driver, post, text, source="group"):
                         Keys.RETURN
                     ).key_up(Keys.CONTROL).perform()
                     print(f"    -> Commented via keyboard fallback: {text[:50]}...")
-                    mark_comment_done()
-                    try:
-                        post_url_logged = extract_post_url(driver, post)
-                        log_author_commented(author_url, post_url_logged)
-                        register_post_commented(driver, post)
-                    except Exception:
-                        pass
                     human_sleep(8, 15)
                     take_coffee_break()
                     return True
@@ -5339,18 +3729,15 @@ def perform_comment(driver, post, text, source="group"):
         human_sleep(1, 2)
 
         # Type the comment with multiple methods
-        # IMPORTANTE: human_type vem PRIMEIRO — digita char-by-char com pausas
-        # naturais. Os fallbacks (send_keys direto, execute_script) sao bot-like
-        # e so devem rodar se o human_type falhar.
         typed = False
         type_methods = [
-            lambda: human_type(box, text),
             lambda: box.send_keys(text),
             lambda: driver.execute_script(
                 "arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('input', {bubbles: true}));",
                 box,
                 text,
             ),
+            lambda: human_type(box, text),
         ]
 
         for type_method in type_methods:
@@ -5413,13 +3800,6 @@ def perform_comment(driver, post, text, source="group"):
                 Keys.CONTROL
             ).perform()
         print(f"    -> Commented (AI): {text[:50]}...")
-        mark_comment_done()
-        try:
-            post_url_logged = extract_post_url(driver, post)
-            log_author_commented(author_url, post_url_logged)
-            register_post_commented(driver, post)
-        except Exception:
-            pass
         human_sleep(8, 15)
         take_coffee_break()
         return True
@@ -5677,9 +4057,8 @@ def run_group_bot(browser, extra_targets=None):
                                 commented_in_group.add(urn)
                             else:
                                 text = post.text
-                                # Aceita EN + EU langs (DE/FR/ES/IT/NL/etc). PT rejeitado.
-                                if is_post_worth_commenting(text, post) and (
-                                    not FEED_ENGLISH_ONLY or is_text_supportable(text)
+                                if len(text) > 15 and (
+                                    not FEED_ENGLISH_ONLY or is_text_english(text)
                                 ):
                                     comment = get_ai_comment(text)
                                     if perform_comment(browser, post, comment):
@@ -5699,9 +4078,7 @@ def run_group_bot(browser, extra_targets=None):
                 f"    -> Scrollando grupo... (Tentativa {scroll_attempts + 1}/{max_scroll_attempts})"
             )
             try:
-                browser.execute_script(
-                    f"window.scrollBy(0, {random.randint(500, 1000)});"
-                )
+                browser.execute_script("window.scrollBy(0, 800);")
                 human_sleep(15, 30)
                 gc.collect()  # Limpa memória após scroll
             except Exception as e:
@@ -5816,7 +4193,7 @@ def run_group_bot(browser, extra_targets=None):
         except Exception as e:
             if "invalid session id" in str(e).lower():
                 print(f"\n!!! ERRO CRÍTICO DE SESSÃO: {e}")
-                #browser.quit()
+                browser.quit()
                 start_browser()
                 return
 
@@ -5846,8 +4223,21 @@ def random_mouse_hover(browser):
         pass
 
 
-# NOTE: duplicatas de create_csv/add_to_csv removidas — escreviam em ./CSV/ (root)
-# ao inves de data/CSV/. As versoes corretas estao em ~linha 1597 (usam DATA_DIR).
+def create_csv(data, time_str):
+    time_str = time_str.replace(":", "-").replace(".", "-")
+    filename = "GroupBot-" + time_str + ".csv"
+    if not os.path.exists("CSV"):
+        os.makedirs("CSV")
+    with open(os.path.join("CSV", filename), "w", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerow(data)
+
+
+def add_to_csv(data, time_str):
+    time_str = time_str.replace(":", "-").replace(".", "-")
+    path = os.path.join(os.getcwd(), "CSV", "GroupBot-" + time_str + ".csv")
+    if os.path.exists(path):
+        with open(path, "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(data)
 
 
 # ==============================================================================
@@ -5867,146 +4257,6 @@ def random_mouse_hover(browser):
 # ==============================================================================
 
 
-def is_logged_out(driver):
-    """
-    Detecta se a sessao foi deslogada do LinkedIn.
-    Sinais: URL de login/authwall ou presenca do form de login na pagina.
-    """
-    try:
-        url = (driver.current_url or "").lower()
-    except Exception:
-        return False
-
-    logout_url_markers = (
-        "/login",
-        "/uas/login",
-        "/checkpoint/lg/login",
-        "/authwall",
-        "linkedin.com/m/login",
-    )
-    if any(m in url for m in logout_url_markers):
-        return True
-
-    # Fallback: campo de login presente na pagina (e o feed ausente)
-    try:
-        has_login_field = bool(
-            driver.find_elements(By.ID, "username")
-            or driver.find_elements(By.NAME, "session_key")
-        )
-        if has_login_field:
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def do_linkedin_login(driver, email=LINKEDIN_EMAIL, password=LINKEDIN_PASSWORD):
-    """
-    Faz login no LinkedIn com as credenciais configuradas.
-    Retorna True se conseguiu autenticar, False caso contrario.
-    """
-    try:
-        print(f"🔐 [LOGIN] Sessao deslogada — autenticando como {email}...")
-        driver.get("https://www.linkedin.com/login")
-        human_sleep(3, 5)
-
-        try:
-            email_field = WebDriverWait(driver, 15).until(
-                EC.presence_of_element_located((By.ID, "username"))
-            )
-        except Exception:
-            # Fallback: name=session_key
-            try:
-                email_field = driver.find_element(By.NAME, "session_key")
-            except Exception:
-                print("    -> [LOGIN FAIL] Campo de email nao encontrado.")
-                return False
-
-        try:
-            email_field.clear()
-        except Exception:
-            pass
-        human_type(email_field, email)
-        human_sleep(1, 2)
-
-        try:
-            password_field = driver.find_element(By.ID, "password")
-        except Exception:
-            try:
-                password_field = driver.find_element(By.NAME, "session_password")
-            except Exception:
-                print("    -> [LOGIN FAIL] Campo de senha nao encontrado.")
-                return False
-
-        try:
-            password_field.clear()
-        except Exception:
-            pass
-        human_type(password_field, password)
-        human_sleep(1, 2)
-
-        # Submit
-        try:
-            submit_btn = driver.find_element(
-                By.XPATH, "//button[@type='submit' and (contains(., 'Sign in') or contains(., 'Entrar') or contains(@aria-label, 'Sign in'))]"
-            )
-            driver.execute_script("arguments[0].click();", submit_btn)
-        except Exception:
-            try:
-                password_field.send_keys(Keys.ENTER)
-            except Exception:
-                print("    -> [LOGIN FAIL] Nao foi possivel submeter o form.")
-                return False
-
-        # Espera a navegacao sair da pagina de login
-        for _ in range(20):
-            human_sleep(1, 2)
-            try:
-                url = (driver.current_url or "").lower()
-            except Exception:
-                continue
-            if "/feed" in url or ("linkedin.com" in url and "/login" not in url and "/checkpoint" not in url and "/authwall" not in url):
-                print("✅ [LOGIN] Autenticado com sucesso.")
-                return True
-            if "/checkpoint/challenge" in url or "captcha" in url:
-                print("    -> [LOGIN BLOCKED] CAPTCHA/2FA detectado — intervencao manual necessaria.")
-                return False
-
-        print("    -> [LOGIN FAIL] Timeout aguardando saida da pagina de login.")
-        return False
-    except Exception as e:
-        print(f"    -> [LOGIN ERROR] {str(e)[:120]}")
-        return False
-
-
-def ensure_logged_in(driver):
-    """
-    Verifica se a sessao esta ativa; se nao estiver, tenta logar automaticamente.
-    Chamar antes de blocos importantes para garantir que estamos autenticados.
-    """
-    if driver is None:
-        return False
-    try:
-        try:
-            url = (driver.current_url or "").lower()
-        except Exception:
-            url = ""
-        # Se ainda nao navegou para o LinkedIn, ir para o feed primeiro
-        if "linkedin.com" not in url:
-            try:
-                driver.get("https://www.linkedin.com/feed/")
-                human_sleep(4, 7)
-            except Exception:
-                pass
-
-        if not is_logged_out(driver):
-            return True
-        return do_linkedin_login(driver)
-    except Exception as e:
-        print(f"    -> [ENSURE LOGIN ERROR] {str(e)[:120]}")
-        return False
-
-
 def start_browser():
     global browser
     max_retries = 3
@@ -6018,27 +4268,16 @@ def start_browser():
                 try:
                     # Aguarda antes de matar processos antigos
                     time.sleep(0.5)
-                    #os.system("taskkill /im msedge.exe /f >nul 2>&1")
+                    os.system("taskkill /im msedge.exe /f >nul 2>&1")
                     time.sleep(1)  # Aguarda para evitar DevToolsActivePort issue
                 except Exception:
                     pass
 
-            # STEALTH: Random Window Size + User Agent para evitar fingerprinting
+            # STEALTH: Random Window Size para evitar fingerprinting
             opts = EdgeOptions()
             width = random.randint(1024, 1920)
             height = random.randint(768, 1080)
             opts.add_argument(f"--window-size={width},{height}")
-
-            # STEALTH: Rotação de User Agent (8 variantes: Edge/Chrome/Firefox/Safari)
-            ua_list = [
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-            ]
-            opts.add_argument(f"user-agent={random.choice(ua_list)}")
 
             # Usa o perfil padrão do Edge (que já está logado no LinkedIn)
             ud = os.path.join(
@@ -6064,65 +4303,11 @@ def start_browser():
             browser.set_page_load_timeout(120)
             browser.set_script_timeout(120)
 
-            # STEALTH: Script anti-fingerprinting (executado em cada navegação)
-            stealth_script = """
-                // Esconde webdriver flag
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-
-                // Falsifica plugins (browsers reais têm vários)
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => [
-                        {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer'},
-                        {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai'},
-                        {name: 'Native Client', filename: 'internal-nacl-plugin'}
-                    ]
-                });
-
-                // Idiomas (foco internacional EN)
-                Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-
-                // Hardware (typical desktop)
-                Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
-                Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
-
-                // Canvas fingerprint noise (cada toDataURL retorna ligeiramente diferente)
-                const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
-                HTMLCanvasElement.prototype.toDataURL = function(...args) {
-                    const ctx = this.getContext('2d');
-                    if (ctx) {
-                        const shift = Math.random() * 0.0001;
-                        ctx.shadowOffsetX = shift;
-                        ctx.shadowOffsetY = shift;
-                    }
-                    return origToDataURL.apply(this, args);
-                };
-
-                // WebGL fingerprint spoofing
-                const origGetParameter = WebGLRenderingContext.prototype.getParameter;
-                WebGLRenderingContext.prototype.getParameter = function(p) {
-                    if (p === 37445) return 'Intel Inc.';
-                    if (p === 37446) return 'Intel Iris OpenGL Engine';
-                    return origGetParameter.apply(this, [p]);
-                };
-
-                // Esconde Chrome automation flags
-                if (window.chrome) {
-                    window.chrome.runtime = {};
-                }
-
-                // Permissions API natural
-                const origQuery = window.navigator.permissions && window.navigator.permissions.query;
-                if (origQuery) {
-                    window.navigator.permissions.query = (parameters) => (
-                        parameters.name === 'notifications'
-                            ? Promise.resolve({state: Notification.permission})
-                            : origQuery(parameters)
-                    );
-                }
-            """
             browser.execute_cdp_cmd(
                 "Page.addScriptToEvaluateOnNewDocument",
-                {"source": stealth_script},
+                {
+                    "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+                },
             )
 
             print("✅ Browser iniciado com sucesso!")
@@ -6151,14 +4336,8 @@ def start_browser():
         print("⚠️ Browser é None, abortando execução.")
         return
 
-    # Garante que estamos logados antes de qualquer acao
     try:
-        ensure_logged_in(browser)
-    except Exception as e:
-        print(f"    -> [LOGIN CHECK ERROR] {str(e)[:120]}")
-
-    try:
-        # 1. Conexões Rápidas SEMPRE primeiro (limite consumível)
+        # 1. Conexões Rápidas (Novo modo de bypass de limite)
         try:
             run_quick_connects(browser)
         except Exception as e:
@@ -6168,57 +4347,33 @@ def start_browser():
                 raise  # Re-raise to outer handler for restart
             print(f"    -> Quick Connects erro: {str(e)[:80]}")
 
-        # 1.5 DETECTA CONVITES ACEITOS (sempre antes dos engajamentos para alimentar a DB)
+        # 2. Feed Interaction
         try:
-            detect_accepted_connections(browser)
+            interact_with_feed_human(browser)
         except Exception as e:
-            print(f"    -> [TRACKING ERROR] {str(e)[:80]}")
+            error_msg = str(e).lower()
+            if "invalid session id" in error_msg or "session deleted" in error_msg:
+                print("\n⚠️ Session expired during Feed. Aborting run.")
+                raise
+            print(f"Feed Error: {e}")
+            # Não levanta exceção - continua mesmo se feed falhar
 
-        # 2. BLOCOS SSI BOOST EM ORDEM ALEATÓRIA (anti-pattern detection)
-        # Cobre todos os 4 pilares: Brand, People, Insights, Relationships
-        ssi_blocks = [
-            ("Feed", interact_with_feed_human),
-            ("RandomBrowsing", random_browsing_habit),
-            ("Networker", run_networker),
-            ("Reciprocator", run_reciprocator),
-            ("PeopleYouMayKnow", visit_people_you_may_know),
-            ("BrowseArticles", browse_linkedin_articles),
-            ("WelcomeMessages", send_welcome_message_to_recent_connections),
-            #("EngageConnectionsPosts", engage_with_recent_connections_posts),
-            ("Newsletters", engage_with_newsletters),
-        ]
-        # Daily post: rodar so 1x por dia (controlado por flag file dentro da funcao)
-        ssi_blocks.append(("DailyPost", publish_daily_micro_post))
+        # 3. Stealth & SSI Boosters (NEW)
+        try:
+            random_browsing_habit(browser)
+        except Exception as e:
+            print(f"Erro no random browsing: {e}")
 
-        random.shuffle(ssi_blocks)
-        print(f"\n🎲 [STEALTH] Ordem dos blocos SSI aleatorizada: {[b[0] for b in ssi_blocks]}")
+        try:
+            run_networker(browser)
+        except Exception as e:
+            print(f"Erro no Networker: {e}")
 
-        for block_name, block_fn in ssi_blocks:
-            try:
-                # Detecta deslogamento entre blocos e reautentica
-                try:
-                    if is_logged_out(browser):
-                        print(f"\n⚠️ [{block_name}] Sessao deslogada detectada — tentando relogin...")
-                        if not do_linkedin_login(browser):
-                            print(f"    -> [{block_name}] Relogin falhou, pulando bloco.")
-                            continue
-                except Exception:
-                    pass
-                block_fn(browser)
-            except Exception as e:
-                error_msg = str(e).lower()
-                if "invalid session id" in error_msg or "session deleted" in error_msg:
-                    print(f"\n⚠️ Session expired during {block_name}. Aborting run.")
-                    raise
-                print(f"    -> [{block_name} ERROR] {str(e)[:80]}")
-                # Pos-erro: se foi por causa de logout, reautentica para o proximo bloco
-                try:
-                    if is_logged_out(browser):
-                        do_linkedin_login(browser)
-                except Exception:
-                    pass
+        try:
+            run_reciprocator(browser)
+        except Exception as e:
+            print(f"Erro no Reciprocator: {e}")
 
-        # 3. Cleanup ocasional de convites antigos (30% das vezes)
         try:
             if random.random() < 0.3:
                 withdraw_old_invites(browser)
@@ -6234,13 +4389,6 @@ def start_browser():
 
         # 5. LÓGICA PRINCIPAL: Varre Grupo + Sniper (para o limite diário)
         try:
-            # Verifica login antes da logica principal
-            try:
-                if is_logged_out(browser):
-                    print("\n⚠️ [MAIN] Sessao deslogada — relogando antes da logica principal...")
-                    do_linkedin_login(browser)
-            except Exception:
-                pass
             run_main_bot_logic(browser)
         except Exception as e:
             error_msg = str(e).lower()
@@ -6251,7 +4399,7 @@ def start_browser():
             raise
 
         # Fim da sessão, fechar o navegador
-        #browser.quit()
+        browser.quit()
 
     except Exception as e:
         error_msg = str(e).lower()
@@ -6259,8 +4407,12 @@ def start_browser():
             print("\n🛑 ERRO DE SESSÃO INVÁLIDA DETECTADO. Re-levantando para restart.")
             raise  # Re-raise so launch() can restart
         print(f"\n🛑 ERRO GERAL NA EXECUÇÃO DO BOT: {e}")
-        # NAO quitamos o browser em erro geral — preserva sessao/login para a proxima rodada.
-        # Apenas em erro de sessao invalida (acima) deixamos o launch() reiniciar.
+        # Garante que o driver feche se ele foi aberto
+        if browser is not None:
+            try:
+                browser.quit()
+            except Exception:
+                pass
 
     # ==============================================================================
     # START (REDUZIDA PARA TESTE DE CONEXÃO E COLETA)
@@ -6340,11 +4492,8 @@ def launch():
     # OTIMIZAÇÃO: Carrega cache em memória no startup (only once!)
     get_commented_posts()
 
-    # Garante que data/visitedUsers.txt exista (em vez do CWD).
-    visited_path = os.path.join(DATA_DIR, "visitedUsers.txt")
-    os.makedirs(DATA_DIR, exist_ok=True)
-    if not os.path.isfile(visited_path):
-        open(visited_path, "w").close()
+    if not os.path.isfile("visitedUsers.txt"):
+        open("visitedUsers.txt", "w").close()
     max_restarts = 3
     restart_count = 0
     while restart_count < max_restarts:
@@ -6358,9 +4507,6 @@ def launch():
                 print(
                     f"\n⚠️ Invalid session id detected. Restarting browser ({restart_count}/{max_restarts})..."
                 )
-                # Sessao invalida = driver morto. quit() libera o lock do
-                # user-data-dir para que o proximo start_browser() consiga
-                # reabrir o perfil (login persiste em disco via cookies).
                 try:
                     if "browser" in globals() and browser is not None:
                         try:
@@ -6406,4 +4552,6 @@ if __name__ == "__main__":
         launch()  # Forçar execução do launch
         print("✅ Launch concluído com sucesso!")
     except KeyboardInterrupt:
-        print("\n🛑 Parada Manual. Mantendo browser aberto para preservar sessao.")
+        print("\n🛑 Parada Manual.")
+        if browser:
+            browser.quit()

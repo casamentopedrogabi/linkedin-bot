@@ -36,9 +36,15 @@ env/
 .DS_Store
 
 # Bot-Specific
-perfil_robo_edge/          # Credenciais do navegador (PRIVADO)
-msedgedriver.exe           # Driver (pode estar no root)
-.env                        # Variáveis de ambiente
+# (Git nao suporta comentario inline em .gitignore — comentarios em linha propria)
+# Credenciais do navegador (PRIVADO)
+perfil_robo_edge/
+# Driver (pode estar no root)
+msedgedriver.exe
+# Variaveis de ambiente / credenciais — NUNCA versionar
+.env
+.env.*
+!.env.example
 
 # Data & Logs (Opcional - manter histórico)
 # Descomente se quiser versioná-los:
